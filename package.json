@@ -3,10 +3,14 @@
   "version": "1.0.50",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "bun run --watch src/index.ts"
+    "dev": "bun run --watch src/index.ts",
+    "link-ideas": "powershell -Command \"if (-not (Test-Path docs)) { New-Item -ItemType Directory -Path docs }; cmd /c mklink /J docs\\ideas 'C:\\Users\\ASUS\\Documents\\My Ideas'\""
   },
   "dependencies": {
-    "elysia": "latest"
+    "@elysiajs/jwt": "^1.4.1",
+    "@prisma/client": "^7.4.2",
+    "elysia": "latest",
+    "prisma": "^7.4.2"
   },
   "devDependencies": {
     "bun-types": "latest"

@@ -40,3 +40,7 @@ yarn-error.log*
 **/*.log
 package-lock.json
 **/*.bun
+
+# Ignore linked ideas folder
+docs/ideas
+/src/generated/prisma
