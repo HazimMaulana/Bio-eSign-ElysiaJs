@@ -43,4 +43,7 @@ package-lock.json
 
 # Ignore linked ideas folder
 docs/ideas
-/src/generated/prisma
+generated/prisma
+generated/prismabox
+
+.vscode

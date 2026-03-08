@@ -1,73 +1,74 @@
 import { Elysia, t } from "elysia";
-import { jwt } from "@elysiajs/jwt";
 import { prisma } from "./lib/prisma";
-import { encryptTemplate, decryptTemplate } from "./lib/crypto";
+import { startMqttSubscriber } from "./lib/mqtt";
+import { jwtPlugin } from "./middleware/auth";
+import { departmentRoutes } from "./routes/departments";
+import { studentRoutes } from "./routes/students";
+import { lecturerRoutes } from "./routes/lecturers";
+import { courseRoutes } from "./routes/courses";
+import { userRoutes } from "./routes/users";
+import { scheduleRoutes } from "./routes/schedules";
+import { deviceRoutes } from "./routes/devices";
+import { attendanceRoutes } from "./routes/attendance";
+
+// ─── Start MQTT Subscriber ─────────────────────────────
+startMqttSubscriber();
 
 const app = new Elysia()
-  .use(
-    jwt({
-      name: 'jwt',
-      secret: process.env.JWT_SECRET || 'super-secret-key-for-university-bioesign'
-    })
-  )
+  .use(jwtPlugin)
   .get("/", () => ({
     message: "Bio-eSign University Attendance API",
     status: "online",
-    version: "1.0.0"
+    version: "1.0.0",
   }))
-  .group("/api", (app) => 
+  .group("/api", (app) =>
     app
-      .post("/auth/login", async ({ jwt, body }) => {
-        // Simple mock login for now - you can integrate with User model later
-        const token = await jwt.sign({
-          sub: body.nim,
-          role: 'ADMIN'
+      // ─── Auth ─────────────────────────────────────────
+      .post("/auth/login", async ({ jwt, body, set }) => {
+        const user = await prisma.user.findUnique({
+          where: { username: body.username },
         });
-        return { token };
+        if (!user) {
+          set.status = 401;
+          return { error: "Invalid credentials" };
+        }
+        if (!user.isActive) {
+          set.status = 403;
+          return { error: "Account is deactivated" };
+        }
+        const valid = await Bun.password.verify(body.password, user.passwordHash);
+        if (!valid) {
+          set.status = 401;
+          return { error: "Invalid credentials" };
+        }
+        const token = await jwt.sign({
+          sub: user.username,
+          role: user.role,
+        });
+        return {
+          token,
+          user: {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            role: user.role,
+          },
+        };
       }, {
         body: t.Object({
-          nim: t.String(),
-          password: t.String()
-        })
+          username: t.String(),
+          password: t.String(),
+        }),
       })
-      .group("/attendance", (app) => 
-        app
-          .onBeforeHandle(async ({ jwt, set, headers }) => {
-            const auth = headers.authorization;
-            if (!auth || !auth.startsWith('Bearer ')) {
-              set.status = 401;
-              return "Unauthorized";
-            }
-            const token = auth.split(' ')[1];
-            const profile = await jwt.verify(token);
-            if (!profile) {
-              set.status = 401;
-              return "Invalid Token";
-            }
-          })
-          .get("/history", async () => {
-            return await prisma.attendance.findMany({
-              take: 10,
-              orderBy: { timestamp: 'desc' }
-            });
-          })
-          .post("/record", async ({ body }) => {
-            // This is where MQTT data or Device API data would hit
-            return await prisma.attendance.create({
-              data: {
-                userId: body.userId,
-                location: body.location,
-                deviceId: body.deviceId
-              }
-            });
-          }, {
-            body: t.Object({
-              userId: t.String(),
-              location: t.String(),
-              deviceId: t.String()
-            })
-          })
-      )
+      // ─── Resource Routes ──────────────────────────────
+      .use(departmentRoutes)
+      .use(studentRoutes)
+      .use(lecturerRoutes)
+      .use(courseRoutes)
+      .use(userRoutes)
+      .use(scheduleRoutes)
+      .use(deviceRoutes)
+      .use(attendanceRoutes)
   )
   .listen(3000);
 

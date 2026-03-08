@@ -1,49 +1,196 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// BioeSign University Edition - Enterprise Prisma Schema
+// Optimized for PostgreSQL, High Concurrency, and Academic Logic
 
 generator client {
   provider = "prisma-client-js"
+  output   = "../generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
+
+generator prismabox {
+  provider                    = "prismabox"
+  typeboxImportDependencyName = "elysia"
+  typeboxImportVariableName   = "t"
+  inputModel                  = true
+  output                      = "../generated/prismabox"
+}
+
+// ─── Enums ───────────────────────────────────────────────
+
+enum AttendanceAction {
+  CHECK_IN
+  CHECK_OUT
+}
+
+enum DeviceStatus {
+  ONLINE
+  OFFLINE
+  MAINTENANCE
+  ERROR
+}
+
+enum UserRole {
+  SUPERADMIN
+  FACULTY_ADMIN
+  LECTURER
+  STUDENT
+}
+
+// ─── Dashboard User (Auth & RBAC) ───────────────────────
 
 model User {
-  id        String      @id @default(uuid())
-  nim       String      @unique
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String   @map("password_hash")
+  role         UserRole @default(LECTURER)
+  email        String   @unique
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("users")
+}
+
+// ─── Department Management ──────────────────────────────
+
+model Department {
+  id        String     @id @default(uuid())
+  code      String     @unique // e.g., 'FTI', 'FEB'
   name      String
-  role      Role        @default(STUDENT)
-  email     String      @unique
-  biometrics Biometric[]
-  attendances Attendance[]
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
+  students  Student[]
+  lecturers Lecturer[]
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  @@map("departments")
 }
 
-model Biometric {
-  id          String   @id @default(uuid())
-  userId      String
-  user        User     @relation(fields: [userId], references: [id])
-  slot        Int      // 1-3 fingers per user
-  template64  String   // AES-256-GCM encrypted template
-  iv          String   // Initialization Vector for AES
-  tag         String   // Auth Tag for GCM
-  createdAt   DateTime @default(now())
+// ─── Student Identity ───────────────────────────────────
+
+model Student {
+  id           String               @id @default(uuid())
+  nim          String               @unique
+  name         String
+  email        String?              @unique
+  isActive     Boolean              @default(true) @map("is_active")
+  departmentId String?              @map("department_id")
+  department   Department?          @relation(fields: [departmentId], references: [id])
+  fingerprints StudentFingerprint[]
+  attendances  AttendanceEvent[]
+  createdAt    DateTime             @default(now()) @map("created_at")
+  updatedAt    DateTime             @updatedAt @map("updated_at")
+
+  @@map("students")
 }
 
-model Attendance {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  location  String   // Classroom or Building
-  deviceId  String   // ESP32 device ID
-  timestamp DateTime @default(now())
+// ─── Biometric Vault (AES-256-GCM Encrypted) ───────────
+
+model StudentFingerprint {
+  id                    String   @id @default(uuid())
+  studentId             String   @map("student_id")
+  student               Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  slot                  Int // 1-5 for redundancy
+  fingerprintIdOnDevice Int?     @map("fingerprint_id_on_device")
+  templateEnc           String   @map("template_enc") // AES-256-GCM encrypted template
+  encryptionIv          String   @map("encryption_iv") // Initialization Vector
+  encryptionTag         String   @map("encryption_tag") // GCM Auth Tag
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@unique([studentId, slot])
+  @@map("student_fingerprints")
 }
 
-enum Role {
-  STUDENT
-  LECTURER
-  ADMIN
+// ─── Device Management (ESP32 Fleet) ────────────────────
+
+model Device {
+  id              String            @id @default(uuid())
+  deviceId        String            @unique @map("device_id") // e.g., 'ESP32_LAB_01'
+  locationName    String?           @map("location_name") // e.g., 'Gedung A, Ruang 302'
+  status          DeviceStatus      @default(OFFLINE)
+  lastPing        DateTime?         @map("last_ping")
+  firmwareVersion String?           @map("firmware_version")
+  attendances     AttendanceEvent[]
+  schedules       Schedule[]
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  @@map("devices")
+}
+
+// ─── Academic Logic ─────────────────────────────────────
+
+model Lecturer {
+  id           String     @id @default(uuid())
+  nidn         String     @unique // National Lecturer ID
+  name         String
+  email        String     @unique
+  departmentId String     @map("department_id")
+  department   Department @relation(fields: [departmentId], references: [id])
+  schedules    Schedule[]
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  @@map("lecturers")
+}
+
+model Course {
+  id        String     @id @default(uuid())
+  code      String     @unique
+  name      String
+  credits   Int        @default(3)
+  schedules Schedule[]
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  @@map("courses")
+}
+
+model Schedule {
+  id          String            @id @default(uuid())
+  courseId    String            @map("course_id")
+  course      Course            @relation(fields: [courseId], references: [id])
+  lecturerId  String            @map("lecturer_id")
+  lecturer    Lecturer          @relation(fields: [lecturerId], references: [id])
+  deviceId    String            @map("device_id")
+  device      Device            @relation(fields: [deviceId], references: [id])
+  dayOfWeek   Int               @map("day_of_week") // 0=Sunday, 6=Saturday
+  startTime   DateTime          @map("start_time")
+  endTime     DateTime          @map("end_time")
+  roomName    String?           @map("room_name")
+  attendances AttendanceEvent[]
+  createdAt   DateTime          @default(now()) @map("created_at")
+
+  @@map("schedules")
+}
+
+// ─── Attendance Events (High Traffic) ───────────────────
+
+model AttendanceEvent {
+  id         BigInt           @id @default(autoincrement())
+  studentId  String?          @map("student_id")
+  student    Student?         @relation(fields: [studentId], references: [id])
+  deviceId   String           @map("device_id")
+  device     Device           @relation(fields: [deviceId], references: [id])
+  scheduleId String?          @map("schedule_id")
+  schedule   Schedule?        @relation(fields: [scheduleId], references: [id])
+  action     AttendanceAction
+  matchScore Int?             @map("match_score")
+  eventTime  DateTime         @default(now()) @map("event_time")
+  rawPayload Json?            @map("raw_payload") // Full MQTT payload for audit
+
+  @@index([studentId, eventTime])
+  @@index([eventTime])
+  @@map("attendance_events")
+}
+
+// ─── Security Audit Log ─────────────────────────────────
+
+model SecurityAuditLog {
+  id          BigInt   @id @default(autoincrement())
+  actionType  String   @map("action_type") // e.g., 'REGISTER_FINGERPRINT', 'ACCESS_DENIED'
+  actorId     String?  @map("actor_id")
+  description String?
+  ipAddress   String?  @map("ip_address")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("security_audit_logs")
 }

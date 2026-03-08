@@ -11,6 +11,25 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  mqtt:
+    image: eclipse-mosquitto:2
+    restart: always
+    ports:
+      - "1883:1883"
+      - "8883:8883"
+    volumes:
+      - ./config/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
   # adminer:
   #   image: adminer
   #   restart: always
@@ -19,3 +38,6 @@ services:
 
 volumes:
   postgres_data:
+  mosquitto_data:
+  mosquitto_log:
+  redis_data:
