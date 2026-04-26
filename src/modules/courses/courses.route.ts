@@ -1,6 +1,6 @@
 import { Elysia, t } from "elysia";
-import { prisma } from "../lib/prisma";
-import { jwtPlugin, authGuard } from "../middleware/auth";
+import { prisma } from "../../lib/prisma";
+import { jwtPlugin, authGuard } from "../../middleware/auth";
 
 export const courseRoutes = new Elysia({ prefix: "/courses" })
   .use(jwtPlugin)

@@ -16,6 +16,7 @@ const TOPICS = {
   TEMPLATE_CHUNK: "bioesign/+/template/chunk",
 } as const;
 
+
 const TOPIC_PATTERNS = {
   ATTENDANCE: /^bioesign\/[^/]+\/attendance$/,
   DEVICE_PING: /^bioesign\/[^/]+\/ping$/,
@@ -332,29 +333,46 @@ async function handleTemplateChunk(payload: TemplateChunkPayload) {
 }
 
 export function startMqttSubscriber() {
-  const brokerUrl = process.env.MQTT_BROKER_URL || "mqtt://localhost:1883";
+  const brokerUrl = process.env.MQTT_URL;
+  const username = process.env.MQTT_USERNAME;
+  const password = process.env.MQTT_PASSWORD;
+
+  if (!brokerUrl) {
+    throw new Error("MQTT_URL is required");
+  }
+
+  if (!username) {
+    throw new Error("MQTT_USERNAME is required");
+  }
+
+  if (!password) {
+    throw new Error("MQTT_PASSWORD is required");
+  }
+
   const clientId = `bioesign-server-${Date.now()}`;
-  const topics = Object.values(TOPICS);
+
+  // Untuk testing awal, pakai ini dulu
+  const topics = ["presence/#"];
 
   debugLog("Starting MQTT subscriber", {
     broker_url: brokerUrl,
     client_id: clientId,
+    username,
     topics,
     debug_enabled: MQTT_DEBUG,
   });
 
   const client = mqtt.connect(brokerUrl, {
     clientId,
+    username,
+    password,
     clean: true,
     reconnectPeriod: 5000,
+    connectTimeout: 10_000,
   });
 
   client.on("connect", () => {
     console.log(`[MQTT] Connected to broker: ${brokerUrl}`);
-    debugLog("Broker connection established", {
-      broker_url: brokerUrl,
-      client_id: clientId,
-    });
 
     client.subscribe(topics, { qos: SUBSCRIBE_QOS }, (err, granted) => {
       if (err) {
@@ -363,99 +381,16 @@ export function startMqttSubscriber() {
       }
 
       console.log("[MQTT] Subscribed to:", topics.join(", "));
-      debugLog("Subscribe acknowledged", {
-        requested_topics: topics,
-        granted:
-          granted?.map((entry) => ({
-            topic: entry.topic,
-            qos: entry.qos,
-          })) ?? [],
-      });
     });
   });
 
   client.on(
     "message",
     async (topic: string, message: Buffer, packet: IPublishPacket) => {
-      const deviceId = extractDeviceId(topic);
-      const envelope = {
-        topic,
-        device_id: deviceId,
-        payload_bytes: message.length,
-        ...getPacketMetadata(packet),
-      };
+      console.log("[MQTT TEST] Topic:", topic);
+      console.log("[MQTT TEST] Message:", message.toString());
 
-      debugLog("MQTT message received", envelope);
-
-      let payload: unknown;
-      try {
-        payload = JSON.parse(message.toString());
-      } catch {
-        console.error(`[MQTT] Invalid JSON on topic ${topic}`);
-        debugLog("MQTT payload JSON parsing failed", envelope);
-        return;
-      }
-
-      const route = resolveTopicRoute(topic);
-      if (!route) {
-        console.warn(`[MQTT] No handler registered for topic ${topic}`);
-        debugLog("MQTT message ignored because no route matched", envelope);
-        return;
-      }
-
-      debugLog("Dispatching MQTT message", {
-        ...envelope,
-        route,
-      });
-
-      try {
-        if (route === "attendance") {
-          if (!isValidAttendance(payload)) {
-            console.error("[MQTT] Invalid attendance payload");
-            debugLog("Attendance payload validation failed", {
-              ...envelope,
-              ...describePayloadShape(payload),
-            });
-            return;
-          }
-
-          debugLog("Attendance payload accepted", summarizeAttendancePayload(payload));
-          await handleAttendance(payload);
-          return;
-        }
-
-        if (route === "ping") {
-          if (!isValidPing(payload)) {
-            console.error("[MQTT] Invalid ping payload");
-            debugLog("Ping payload validation failed", {
-              ...envelope,
-              ...describePayloadShape(payload),
-            });
-            return;
-          }
-
-          debugLog("Ping payload accepted", summarizePingPayload(payload));
-          await handleDevicePing(payload);
-          return;
-        }
-
-        if (!isValidChunk(payload)) {
-          console.error("[MQTT] Invalid template chunk payload");
-          debugLog("Template chunk payload validation failed", {
-            ...envelope,
-            ...describePayloadShape(payload),
-          });
-          return;
-        }
-
-        debugLog(
-          "Template chunk payload accepted",
-          summarizeTemplateChunkPayload(payload)
-        );
-        await handleTemplateChunk(payload);
-      } catch (error) {
-        console.error(`[MQTT] Handler error on ${topic}:`, error);
-      }
+      // kode lama kamu lanjut di bawah sini
     }
   );
 
@@ -465,10 +400,6 @@ export function startMqttSubscriber() {
 
   client.on("reconnect", () => {
     console.log("[MQTT] Reconnecting...");
-    debugLog("MQTT reconnect scheduled", {
-      broker_url: brokerUrl,
-      client_id: clientId,
-    });
   });
 
   return client;

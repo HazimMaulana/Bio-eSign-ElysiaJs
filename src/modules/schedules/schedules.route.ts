@@ -1,7 +1,7 @@
 import { Elysia, t } from "elysia";
-import { prisma } from "../lib/prisma";
-import { redis } from "../lib/redis";
-import { jwtPlugin, authGuard } from "../middleware/auth";
+import { prisma } from "../../lib/prisma";
+import { redis } from "../../lib/redis";
+import { jwtPlugin, authGuard } from "../../middleware/auth";
 
 export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
   .use(jwtPlugin)

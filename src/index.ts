@@ -2,14 +2,14 @@ import { Elysia, t } from "elysia";
 import { prisma } from "./lib/prisma";
 import { startMqttSubscriber } from "./lib/mqtt";
 import { jwtPlugin } from "./middleware/auth";
-import { departmentRoutes } from "./routes/departments";
-import { studentRoutes } from "./routes/students";
-import { lecturerRoutes } from "./routes/lecturers";
-import { courseRoutes } from "./routes/courses";
-import { userRoutes } from "./routes/users";
-import { scheduleRoutes } from "./routes/schedules";
-import { deviceRoutes } from "./routes/devices";
-import { attendanceRoutes } from "./routes/attendance";
+import { departmentRoutes } from "./modules/departments/departments.route";
+import { studentRoutes } from "./modules/students/students.route";
+import { lecturerRoutes } from "./modules/lecturers/lecturers.route";
+import { courseRoutes } from "./modules/courses/courses.route";
+import { userRoutes } from "./modules/users/users.route";
+import { scheduleRoutes } from "./modules/schedules/schedules.route";
+import { deviceRoutes } from "./modules/devices/devices.route";
+import { attendanceRoutes } from "./modules/attendance/attendance.route";
 
 // ─── Start MQTT Subscriber ─────────────────────────────
 startMqttSubscriber();
