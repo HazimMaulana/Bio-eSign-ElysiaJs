@@ -36,6 +36,7 @@ BIOMETRIC_ENCRYPTION_KEY="exactly-32-characters-key-here!!"
 MQTT_BROKER_URL="mqtt://127.0.0.1:1883"
 MQTT_DEBUG="false" # Opsional: ubah ke "true" untuk log debug listener MQTT
 REDIS_URL="redis://127.0.0.1:6379"
+REDIS_ENABLED="false" # Ubah ke "true" jika ingin mengaktifkan cache Redis
 ```
 
 Buat juga file `.env` (untuk Prisma CLI):
@@ -80,6 +81,8 @@ Jika ingin melihat proses subscribe dan message listener secara detail untuk deb
 ```env
 MQTT_DEBUG="true"
 ```
+
+Redis bisa dimatikan tanpa mengubah kode aplikasi. Saat `REDIS_ENABLED="false"`, operasi cache seperti status device online dan aktivasi schedule akan dilewati secara aman.
 
 Contoh tambahan log saat mode debug aktif:
 

@@ -4,7 +4,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "bun run --watch src/index.ts",
-    "link-ideas": "powershell -Command \"if (-not (Test-Path docs)) { New-Item -ItemType Directory -Path docs }; cmd /c mklink /J docs\\ideas 'C:\\Users\\ASUS\\Documents\\My Ideas'\""
+    "link-ideas": "powershell -Command \"if (-not (Test-Path docs)) { New-Item -ItemType Directory -Path docs }; cmd /c mklink /J docs\\ideas 'C:\\Users\\ASUS\\Documents\\My Ideas'\"",
+    "loadtest:mqtt-template": "bun run src/scripts/loadtest-mqtt-template.ts"
   },
   "dependencies": {
     "@elysiajs/jwt": "^1.4.1",
