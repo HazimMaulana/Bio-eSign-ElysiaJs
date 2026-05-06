@@ -1,6 +1,6 @@
 import { prisma } from "../../lib/prisma";
-import { decryptTemplate } from "../../lib/crypto";
-import { getMqttServerTopic, publishMqtt } from "../../lib/mqtt";
+import { decryptTemplate, decryptTemplateBytes } from "../../lib/crypto";
+import { getMqttServerTopic, publishMqtt, publishMqttBinary } from "../../lib/mqtt";
 import { redis } from "../../lib/redis";
 
 const DEFAULT_CHUNK_SIZE = Math.max(
@@ -16,12 +16,38 @@ const DEVICE_TOPICS = {
 const DEFAULT_ACTIVE_CLASS_CODE = process.env.MQTT_DEFAULT_CLASS_CODE ?? "A";
 const activeClassByDevice = new Map<string, string>();
 
-function chunkTemplate(template: string, chunkSize: number) {
-  const chunks: string[] = [];
+function chunkTemplateBytes(template: Buffer, chunkSize: number) {
+  const chunks: Buffer[] = [];
   for (let i = 0; i < template.length; i += chunkSize) {
-    chunks.push(template.slice(i, i + chunkSize));
+    chunks.push(template.subarray(i, i + chunkSize));
   }
   return chunks;
+}
+
+async function getFingerprintTemplateBytes(fingerprint: {
+  templateEnc?: string | null;
+  templateEncBytes?: Uint8Array | Buffer | null;
+  encryptionIv: string;
+  encryptionTag: string;
+}) {
+  if (fingerprint.templateEncBytes) {
+    return await decryptTemplateBytes(
+      fingerprint.templateEncBytes,
+      fingerprint.encryptionIv,
+      fingerprint.encryptionTag
+    );
+  }
+
+  if (fingerprint.templateEnc) {
+    const legacyBase64 = await decryptTemplate(
+      fingerprint.templateEnc,
+      fingerprint.encryptionIv,
+      fingerprint.encryptionTag
+    );
+    return Buffer.from(legacyBase64, "base64");
+  }
+
+  return null;
 }
 
 function getKampusCommandTopic(deviceId: string) {
@@ -38,7 +64,9 @@ async function resolveActiveClassCodeForDevice(
   if (inMemoryClassCode) return inMemoryClassCode;
 
   const cachedClassCode = await redis.get(`active_class:${deviceId}`);
-  return cachedClassCode ?? DEFAULT_ACTIVE_CLASS_CODE;
+  if (cachedClassCode && cachedClassCode !== "STANDBY") return cachedClassCode;
+
+  return DEFAULT_ACTIVE_CLASS_CODE;
 }
 
 export async function listAttendanceClasses() {
@@ -145,18 +173,14 @@ export async function syncAttendanceClassToDevice(
 
   for (const { student } of attendanceClass.students) {
     for (const fingerprint of student.fingerprints) {
-      const template = await decryptTemplate(
-        fingerprint.templateEnc,
-        fingerprint.encryptionIv,
-        fingerprint.encryptionTag
-      );
+      const template = await getFingerprintTemplateBytes(fingerprint);
 
       if (!template) {
         skippedEmptyTemplates++;
         continue;
       }
 
-      const chunks = chunkTemplate(template, chunkSize);
+      const chunks = chunkTemplateBytes(template, chunkSize);
       fingerprintCount++;
       chunkCount += chunks.length;
 
@@ -171,24 +195,16 @@ export async function syncAttendanceClassToDevice(
         fingerprint_id: fingerprint.fingerprintIdOnDevice,
         chunk_size: chunkSize,
         total_chunks: chunks.length,
-        total_size: template.length,
+        total_size: template.byteLength,
         source: "backend_class_sync",
         sent_at: sentAt,
       });
 
       for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
-        await publishMqtt(dataTopic, {
-          device_id: device.deviceId,
-          class_code: attendanceClass.code,
-          student_id: student.id,
-          nim: student.nim,
-          name: student.name,
-          slot: fingerprint.slot,
-          fingerprint_id: fingerprint.fingerprintIdOnDevice,
-          chunk_index: chunkIndex,
-          total_chunks: chunks.length,
-          data: chunks[chunkIndex],
-        });
+        await publishMqttBinary(
+          `${dataTopic}/${chunkIndex + 1}`,
+          chunks[chunkIndex]
+        );
       }
     }
   }
@@ -282,22 +298,18 @@ export async function changeActiveClassOnDevice(
     template_uid: string;
     fingerprint_id: number;
     chunk_total: number;
-    chunks: string[];
+    chunks: Buffer[];
   }> = [];
 
   for (const { student } of attendanceClass.students) {
     for (const fingerprint of student.fingerprints) {
       if (fingerprint.fingerprintIdOnDevice === null) continue;
 
-      const template = await decryptTemplate(
-        fingerprint.templateEnc,
-        fingerprint.encryptionIv,
-        fingerprint.encryptionTag
-      );
+      const template = await getFingerprintTemplateBytes(fingerprint);
 
       if (!template) continue;
 
-      const chunks = chunkTemplate(template, chunkSize);
+      const chunks = chunkTemplateBytes(template, chunkSize);
       if (chunks.length === 0) continue;
 
       templateMessages.push({
@@ -320,6 +332,7 @@ export async function changeActiveClassOnDevice(
       template_uid: template.template_uid,
       fingerprint_id: template.fingerprint_id,
       chunk_total: template.chunk_total,
+      binary: true,
     })),
     sent_at: sentAt,
   });
@@ -328,16 +341,10 @@ export async function changeActiveClassOnDevice(
   for (const template of templateMessages) {
     for (let index = 0; index < template.chunks.length; index++) {
       chunkCount++;
-      await publishMqtt(DEVICE_TOPICS.templateChunk, {
-        sync_id: syncId,
-        device_id: device.deviceId,
-        template_uid: template.template_uid,
-        fingerprint_id: template.fingerprint_id,
-        chunk_index: index + 1,
-        chunk_total: template.chunk_total,
-        chunk: template.chunks[index],
-        sent_at: sentAt,
-      });
+      await publishMqttBinary(
+        `${DEVICE_TOPICS.templateChunk}/${syncId}/${template.template_uid}/${index + 1}`,
+        template.chunks[index]
+      );
     }
   }
 
@@ -369,4 +376,33 @@ export async function syncClassForDeviceRequest(
   );
 
   return await changeActiveClassOnDevice(classCode, deviceId);
+}
+
+export async function setDeviceStandby(deviceId: string) {
+  const device = await prisma.device.findUnique({ where: { deviceId } });
+
+  if (!device) {
+    return { ok: false as const, status: 404, error: "Device not found" };
+  }
+
+  activeClassByDevice.delete(device.deviceId);
+  await redis.set(`active_class:${device.deviceId}`, "STANDBY");
+
+  const sentAt = new Date().toISOString();
+  const commandTopic = getKampusCommandTopic(device.deviceId);
+  const payload = {
+    command: "STANDBY",
+    device_id: device.deviceId,
+    clear_templates: true,
+    sent_at: sentAt,
+  };
+
+  await publishMqtt(commandTopic, payload);
+
+  return {
+    ok: true as const,
+    deviceId: device.deviceId,
+    topic: commandTopic,
+    payload,
+  };
 }

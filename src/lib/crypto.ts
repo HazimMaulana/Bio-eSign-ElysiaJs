@@ -24,6 +24,28 @@ export async function encryptTemplate(template: string) {
 }
 
 /**
+ * Encrypt raw biometric template bytes using AES-256-GCM.
+ */
+export async function encryptTemplateBytes(template: Buffer | Uint8Array) {
+  const iv = randomBytes(12);
+  const key = Buffer.from(ENCRYPTION_KEY, "utf-8");
+
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(Buffer.from(template)),
+    cipher.final(),
+  ]);
+
+  const tag = cipher.getAuthTag().toString("base64");
+
+  return {
+    encrypted,
+    iv: iv.toString("base64"),
+    tag,
+  };
+}
+
+/**
  * Decrypt biometric template using AES-256-GCM
  */
 export async function decryptTemplate(encrypted: string, ivBase64: string, tagBase64: string) {
@@ -38,4 +60,21 @@ export async function decryptTemplate(encrypted: string, ivBase64: string, tagBa
   decrypted += decipher.final('utf8');
   
   return decrypted;
+}
+
+/**
+ * Decrypt raw biometric template bytes using AES-256-GCM.
+ */
+export async function decryptTemplateBytes(encrypted: Buffer | Uint8Array, ivBase64: string, tagBase64: string) {
+  const iv = Buffer.from(ivBase64, "base64");
+  const tag = Buffer.from(tagBase64, "base64");
+  const key = Buffer.from(ENCRYPTION_KEY, "utf-8");
+
+  const decipher = createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+
+  return Buffer.concat([
+    decipher.update(Buffer.from(encrypted)),
+    decipher.final(),
+  ]);
 }

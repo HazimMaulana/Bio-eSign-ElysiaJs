@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { prisma } from "../lib/prisma";
-import { encryptTemplate } from "../lib/crypto";
+import { encryptTemplateBytes } from "../lib/crypto";
 
 const DEFAULT_DB_PATH =
   "C:\\Users\\ASUS\\Documents\\SEMPRO AMIN\\code\\BETA\\data\\presensi.db";
@@ -89,7 +89,8 @@ async function upsertFingerprint(
     return;
   }
 
-  const encrypted = await encryptTemplate(fingerprint.template_b64);
+  const templateBytes = Buffer.from(fingerprint.template_b64, "base64");
+  const encrypted = await encryptTemplateBytes(templateBytes);
 
   await prisma.studentFingerprint.upsert({
     where: {
@@ -100,7 +101,8 @@ async function upsertFingerprint(
     },
     update: {
       fingerprintIdOnDevice: fingerprint.fingerprint_id,
-      templateEnc: encrypted.encrypted,
+      templateEnc: null,
+      templateEncBytes: encrypted.encrypted,
       encryptionIv: encrypted.iv,
       encryptionTag: encrypted.tag,
     },
@@ -108,7 +110,8 @@ async function upsertFingerprint(
       studentId,
       slot: fingerprint.slot,
       fingerprintIdOnDevice: fingerprint.fingerprint_id,
-      templateEnc: encrypted.encrypted,
+      templateEnc: null,
+      templateEncBytes: encrypted.encrypted,
       encryptionIv: encrypted.iv,
       encryptionTag: encrypted.tag,
     },

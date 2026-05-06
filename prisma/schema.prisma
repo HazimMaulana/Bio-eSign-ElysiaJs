@@ -93,7 +93,8 @@ model StudentFingerprint {
   student               Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
   slot                  Int // 1-5 for redundancy
   fingerprintIdOnDevice Int?     @map("fingerprint_id_on_device")
-  templateEnc           String   @map("template_enc") // AES-256-GCM encrypted template
+  templateEnc           String?  @map("template_enc") // Legacy AES-256-GCM encrypted base64 template
+  templateEncBytes      Bytes?   @map("template_enc_bytes") // AES-256-GCM encrypted binary template
   encryptionIv          String   @map("encryption_iv") // Initialization Vector
   encryptionTag         String   @map("encryption_tag") // GCM Auth Tag
   createdAt             DateTime @default(now()) @map("created_at")

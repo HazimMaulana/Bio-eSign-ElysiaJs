@@ -4,6 +4,7 @@ import {
   changeActiveClassOnDevice,
   getAttendanceClassByCode,
   listAttendanceClasses,
+  setDeviceStandby,
   syncAttendanceClassToDevice,
 } from "./classes.service";
 
@@ -53,6 +54,20 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
     return result;
   }, {
     params: t.Object({ code: t.String() }),
+    body: t.Object({
+      deviceId: t.String(),
+    }),
+  })
+  .post("/standby-device", async ({ body, set }) => {
+    const result = await setDeviceStandby(body.deviceId);
+
+    if (!result.ok) {
+      set.status = result.status;
+      return { error: result.error };
+    }
+
+    return result;
+  }, {
     body: t.Object({
       deviceId: t.String(),
     }),

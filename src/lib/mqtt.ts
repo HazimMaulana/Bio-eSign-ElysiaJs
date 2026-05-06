@@ -1,14 +1,13 @@
 import mqtt, { type IPublishPacket, type MqttClient } from "mqtt";
 import { prisma } from "./prisma";
 import { redis } from "./redis";
-import { encryptTemplate } from "./crypto";
 
 // MQTT topic definitions
 // {prefix}/{deviceId}/attendance -> ESP32 reports check-in/check-out
 // {prefix}/{deviceId}/ping -> ESP32 heartbeat
-// {prefix}/{deviceId}/template/chunk -> ESP32 sends template chunks
-// {prefix}/server/{deviceId}/template/manifest -> Server sends manifest to device
-// {prefix}/server/{deviceId}/template/data -> Server sends template chunks to device
+// {prefix}/mahasiswa/templates/request -> ESP32 requests active class templates
+// {prefix}/mahasiswa/registrasi -> ESP32 reports registration metadata
+// {prefix}/mahasiswa/registrasi/template/{deviceId}/{nim}/{slot}/{fingerId} -> ESP32 sends raw template bytes
 
 const TOPIC_PREFIX = process.env.MQTT_TOPIC_PREFIX ?? "presence";
 const SERVER_TOPIC_PREFIX = `${TOPIC_PREFIX}/server`;
@@ -16,60 +15,36 @@ const SERVER_TOPIC_PREFIX = `${TOPIC_PREFIX}/server`;
 const TOPICS = {
   ATTENDANCE: `${TOPIC_PREFIX}/+/attendance`,
   DEVICE_PING: `${TOPIC_PREFIX}/+/ping`,
-  TEMPLATE_CHUNK: `${TOPIC_PREFIX}/+/template/chunk`,
   TEMPLATE_REQUEST: `${TOPIC_PREFIX}/mahasiswa/templates/request`,
+  REGISTRATION_RESULT: `${TOPIC_PREFIX}/mahasiswa/registrasi`,
+  REGISTRATION_TEMPLATE: `${TOPIC_PREFIX}/mahasiswa/registrasi/template/#`,
 } as const;
 
 const MQTT_DEBUG = (process.env.MQTT_DEBUG ?? "").toLowerCase() === "true";
 const SUBSCRIBE_QOS = 1;
-const TEMPLATE_SAMPLE = process.env.TEMPLATE_SAMPLE ?? "";
-const TEMPLATE_SYNC_CHUNK_SIZE = Math.max(
-  64,
-  Number(process.env.MQTT_TEMPLATE_CHUNK_SIZE ?? 512)
-);
-const TEMPLATE_SYNC_SLOT = Math.max(
-  1,
-  Number(process.env.MQTT_TEMPLATE_SLOT ?? 1)
-);
-const TEMPLATE_SYNC_STUDENT_ID =
-  process.env.MQTT_TEMPLATE_STUDENT_ID ?? "env-student-0001";
-const TEMPLATE_SYNC_TTL_SECONDS = Math.max(
-  30,
-  Number(process.env.MQTT_TEMPLATE_SYNC_TTL_SECONDS ?? 300)
-);
 
-type TopicRoute = "attendance" | "ping" | "template/chunk" | "template/request";
+type TopicRoute =
+  | "attendance"
+  | "ping"
+  | "template/request"
+  | "registration/result"
+  | "registration/template";
 
 let mqttClient: MqttClient | null = null;
 let subscriberStarted = false;
 
-// Template chunk reassembly buffer
-// Key: `{deviceId}:{studentId}:{slot}` -> chunks[]
-const chunkBuffers = new Map<
+const pendingRegistrationMetadata = new Map<
   string,
-  { total: number; received: Map<number, string>; timestamp: number }
+  { name: string; classCode?: string; timestamp: number }
 >();
-
-// Clean stale buffers every 60s
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, buf] of chunkBuffers) {
-    if (now - buf.timestamp > 60_000) {
-      chunkBuffers.delete(key);
-      debugLog("Dropped stale template chunk buffer", {
-        buffer_key: key,
-        received_chunks: buf.received.size,
-        total_chunks: buf.total,
-      });
-    }
-  }
-}, 60_000);
 
 interface AttendancePayload {
   device_id: string;
-  fingerprint_id: number;
-  action: "check_in" | "check_out";
-  match_score: number;
+  fingerprint_id?: number;
+  finger_id?: number;
+  action?: "check_in" | "check_out";
+  match_score?: number;
+  confidence?: number;
   timestamp?: string;
 }
 
@@ -79,18 +54,22 @@ interface PingPayload {
   uptime_seconds?: number;
 }
 
-interface TemplateChunkPayload {
-  device_id: string;
-  student_id: string;
-  slot: number;
-  chunk_index: number;
-  total_chunks: number;
-  data: string;
-}
-
 interface TemplateSyncRequestPayload {
   device_id: string;
   action?: string;
+  class_code?: string;
+}
+
+interface RegistrationResultPayload {
+  device_id: string;
+  nim: string;
+  nama?: string;
+  name?: string;
+  slot: number;
+  finger_id?: number;
+  fingerprint_id?: number;
+  success: boolean;
+  message?: string;
   class_code?: string;
 }
 
@@ -137,9 +116,9 @@ function getPacketMetadata(packet: IPublishPacket) {
 function summarizeAttendancePayload(payload: AttendancePayload) {
   return {
     device_id: payload.device_id,
-    fingerprint_id: payload.fingerprint_id,
-    action: payload.action,
-    match_score: payload.match_score,
+    fingerprint_id: payload.fingerprint_id ?? payload.finger_id,
+    action: payload.action ?? "check_in",
+    match_score: payload.match_score ?? payload.confidence,
     has_timestamp: typeof payload.timestamp === "string",
   };
 }
@@ -152,22 +131,15 @@ function summarizePingPayload(payload: PingPayload) {
   };
 }
 
-function summarizeTemplateChunkPayload(payload: TemplateChunkPayload) {
-  return {
-    device_id: payload.device_id,
-    student_id: payload.student_id,
-    slot: payload.slot,
-    chunk_index: payload.chunk_index,
-    total_chunks: payload.total_chunks,
-    data_length: payload.data.length,
-  };
-}
-
 function resolveTopicRoute(topic: string): TopicRoute | null {
   if (!topic.startsWith(`${TOPIC_PREFIX}/`)) return null;
 
   const fullSuffix = topic.slice(TOPIC_PREFIX.length + 1);
   if (fullSuffix === "mahasiswa/templates/request") return "template/request";
+  if (fullSuffix === "mahasiswa/registrasi") return "registration/result";
+  if (fullSuffix.startsWith("mahasiswa/registrasi/template/")) {
+    return "registration/template";
+  }
 
   const parts = topic.split("/");
   if (parts.length < 3) return null;
@@ -176,7 +148,6 @@ function resolveTopicRoute(topic: string): TopicRoute | null {
 
   if (suffix === "attendance") return "attendance";
   if (suffix === "ping") return "ping";
-  if (suffix === "template/chunk") return "template/chunk";
 
   return null;
 }
@@ -186,9 +157,10 @@ function isValidAttendance(p: unknown): p is AttendancePayload {
   const o = p as Record<string, unknown>;
   return (
     typeof o.device_id === "string" &&
-    typeof o.fingerprint_id === "number" &&
-    (o.action === "check_in" || o.action === "check_out") &&
-    typeof o.match_score === "number"
+    (typeof o.fingerprint_id === "number" || typeof o.finger_id === "number") &&
+    (o.action === undefined || o.action === "check_in" || o.action === "check_out") &&
+    (o.match_score === undefined || typeof o.match_score === "number") &&
+    (o.confidence === undefined || typeof o.confidence === "number")
   );
 }
 
@@ -198,23 +170,21 @@ function isValidPing(p: unknown): p is PingPayload {
   return typeof o.device_id === "string";
 }
 
-function isValidChunk(p: unknown): p is TemplateChunkPayload {
-  if (!p || typeof p !== "object") return false;
-  const o = p as Record<string, unknown>;
-  return (
-    typeof o.device_id === "string" &&
-    typeof o.student_id === "string" &&
-    typeof o.slot === "number" &&
-    typeof o.chunk_index === "number" &&
-    typeof o.total_chunks === "number" &&
-    typeof o.data === "string"
-  );
-}
-
 function isValidTemplateSyncRequest(p: unknown): p is TemplateSyncRequestPayload {
   if (!p || typeof p !== "object") return false;
   const o = p as Record<string, unknown>;
   return typeof o.device_id === "string";
+}
+
+function isValidRegistrationResult(p: unknown): p is RegistrationResultPayload {
+  if (!p || typeof p !== "object") return false;
+  const o = p as Record<string, unknown>;
+  return (
+    typeof o.device_id === "string" &&
+    typeof o.nim === "string" &&
+    typeof o.slot === "number" &&
+    typeof o.success === "boolean"
+  );
 }
 
 function extractDeviceId(topic: string): string | null {
@@ -234,14 +204,6 @@ function parseJsonPayload(message: Buffer) {
   }
 }
 
-function chunkTemplate(template: string, chunkSize: number): string[] {
-  const chunks: string[] = [];
-  for (let i = 0; i < template.length; i += chunkSize) {
-    chunks.push(template.slice(i, i + chunkSize));
-  }
-  return chunks;
-}
-
 function publishAsync(client: MqttClient, topic: string, payload: unknown) {
   return new Promise<void>((resolve, reject) => {
     const message = JSON.stringify(payload);
@@ -253,6 +215,20 @@ function publishAsync(client: MqttClient, topic: string, payload: unknown) {
       }
 
       console.log(`[MQTT] Published to ${topic}`);
+      resolve();
+    });
+  });
+}
+
+function publishBinaryAsync(client: MqttClient, topic: string, payload: Buffer | Uint8Array) {
+  return new Promise<void>((resolve, reject) => {
+    client.publish(topic, Buffer.from(payload), { qos: 1 }, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      console.log(`[MQTT] Published binary to ${topic} (${payload.byteLength} bytes)`);
       resolve();
     });
   });
@@ -288,86 +264,19 @@ function waitForMqttConnected(client: MqttClient) {
   });
 }
 
-async function syncTemplateToDevice(
-  client: MqttClient,
-  deviceId: string
-): Promise<void> {
-  if (!TEMPLATE_SAMPLE) {
-    console.warn(
-      "[MQTT] TEMPLATE_SAMPLE kosong. Sync template dilewati untuk device:",
-      deviceId
-    );
-    return;
-  }
-
-  const cacheKey = `mqtt:template-sync:${deviceId}`;
-  const lastSync = await redis.get(cacheKey);
-  if (lastSync) {
-    debugLog("Template sync skipped (cached)", { device_id: deviceId });
-    return;
-  }
-
-  const chunks = chunkTemplate(TEMPLATE_SAMPLE, TEMPLATE_SYNC_CHUNK_SIZE);
-  if (chunks.length === 0) {
-    console.warn(
-      "[MQTT] TEMPLATE_SAMPLE menghasilkan 0 chunk. Sync dibatalkan.",
-      { device_id: deviceId }
-    );
-    return;
-  }
-
-  const manifestTopic = `${SERVER_TOPIC_PREFIX}/${deviceId}/template/manifest`;
-  const dataTopic = `${SERVER_TOPIC_PREFIX}/${deviceId}/template/data`;
-
-  const manifestPayload = {
-    device_id: deviceId,
-    student_id: TEMPLATE_SYNC_STUDENT_ID,
-    slot: TEMPLATE_SYNC_SLOT,
-    chunk_size: TEMPLATE_SYNC_CHUNK_SIZE,
-    total_chunks: chunks.length,
-    total_size: TEMPLATE_SAMPLE.length,
-    source: "env",
-    sent_at: new Date().toISOString(),
-  };
-
-  await publishAsync(client, manifestTopic, manifestPayload);
-
-  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
-    const payload = {
-      device_id: deviceId,
-      student_id: TEMPLATE_SYNC_STUDENT_ID,
-      slot: TEMPLATE_SYNC_SLOT,
-      chunk_index: chunkIndex,
-      total_chunks: chunks.length,
-      data: chunks[chunkIndex],
-    };
-
-    await publishAsync(client, dataTopic, payload);
-  }
-
-  await redis.set(
-    cacheKey,
-    new Date().toISOString(),
-    "EX",
-    TEMPLATE_SYNC_TTL_SECONDS
-  );
-
-  console.log(
-    `[MQTT] Template sync sent to ${deviceId} (${chunks.length} chunks)`
-  );
-  debugLog("Template sync completed", {
-    device_id: deviceId,
-    total_chunks: chunks.length,
-    total_size: TEMPLATE_SAMPLE.length,
-  });
-}
-
 async function handleAttendance(payload: AttendancePayload) {
+  const fingerprintId = payload.fingerprint_id ?? payload.finger_id;
+  if (fingerprintId === undefined) {
+    console.warn("[MQTT] Attendance ignored: missing fingerprint id");
+    return;
+  }
+
   const fingerprint = await prisma.studentFingerprint.findFirst({
-    where: { fingerprintIdOnDevice: payload.fingerprint_id },
+    where: { fingerprintIdOnDevice: fingerprintId },
   });
 
-  const action = payload.action === "check_in" ? "CHECK_IN" : "CHECK_OUT";
+  const action = payload.action === "check_out" ? "CHECK_OUT" : "CHECK_IN";
+  const matchScore = payload.match_score ?? payload.confidence ?? null;
 
   const device = await prisma.device.findUnique({
     where: { deviceId: payload.device_id },
@@ -392,7 +301,7 @@ async function handleAttendance(payload: AttendancePayload) {
       deviceId: device.id,
       scheduleId: cachedScheduleId ?? null,
       action,
-      matchScore: payload.match_score,
+      matchScore,
       eventTime: payload.timestamp ? new Date(payload.timestamp) : new Date(),
       rawPayload: payload as object,
     },
@@ -431,85 +340,6 @@ async function handleDevicePing(payload: PingPayload) {
   debugLog("Ping handler completed", summarizePingPayload(payload));
 }
 
-async function handleTemplateChunk(payload: TemplateChunkPayload) {
-  const bufferKey = `${payload.device_id}:${payload.student_id}:${payload.slot}`;
-
-  let buffer = chunkBuffers.get(bufferKey);
-  if (!buffer) {
-    buffer = {
-      total: payload.total_chunks,
-      received: new Map(),
-      timestamp: Date.now(),
-    };
-    chunkBuffers.set(bufferKey, buffer);
-
-    debugLog("Created template chunk buffer", {
-      buffer_key: bufferKey,
-      total_chunks: payload.total_chunks,
-    });
-  }
-
-  buffer.received.set(payload.chunk_index, payload.data);
-  buffer.timestamp = Date.now();
-
-  if (buffer.received.size === buffer.total) {
-    const chunks: string[] = [];
-    for (let i = 0; i < buffer.total; i++) {
-      const chunk = buffer.received.get(i);
-      if (!chunk) {
-        console.error(`[MQTT] Missing chunk ${i} for ${bufferKey}`);
-        chunkBuffers.delete(bufferKey);
-        return;
-      }
-      chunks.push(chunk);
-    }
-
-    const fullTemplate = chunks.join("");
-    const { encrypted, iv, tag } = await encryptTemplate(fullTemplate);
-
-    await prisma.studentFingerprint.upsert({
-      where: {
-        studentId_slot: {
-          studentId: payload.student_id,
-          slot: payload.slot,
-        },
-      },
-      update: {
-        templateEnc: encrypted,
-        encryptionIv: iv,
-        encryptionTag: tag,
-        fingerprintIdOnDevice: null,
-      },
-      create: {
-        studentId: payload.student_id,
-        slot: payload.slot,
-        templateEnc: encrypted,
-        encryptionIv: iv,
-        encryptionTag: tag,
-      },
-    });
-
-    chunkBuffers.delete(bufferKey);
-    console.log(
-      `[MQTT] Template stored: student=${payload.student_id} slot=${payload.slot} (${buffer.total} chunks)`
-    );
-
-    debugLog("Template chunk handler completed", {
-      ...summarizeTemplateChunkPayload(payload),
-      reassembled_chunks: buffer.total,
-    });
-  } else {
-    console.log(
-      `[MQTT] Chunk ${payload.chunk_index + 1}/${buffer.total} for ${bufferKey}`
-    );
-
-    debugLog("Template chunk buffered", {
-      ...summarizeTemplateChunkPayload(payload),
-      received_chunks: buffer.received.size,
-    });
-  }
-}
-
 async function handleTemplateSyncRequest(payload: TemplateSyncRequestPayload) {
   const { syncClassForDeviceRequest } = await import(
     "../modules/classes/classes.service"
@@ -527,6 +357,95 @@ async function handleTemplateSyncRequest(payload: TemplateSyncRequestPayload) {
 
   console.log(
     `[MQTT] Template sync request served: device=${result.deviceId} class=${result.classCode}`
+  );
+}
+
+async function handleRegistrationResult(payload: RegistrationResultPayload) {
+  const name = payload.name ?? payload.nama ?? "";
+  const fingerprintId = payload.finger_id ?? payload.fingerprint_id ?? null;
+
+  if (!payload.success) {
+    console.warn("[MQTT] Registration failed on device:", {
+      device_id: payload.device_id,
+      nim: payload.nim,
+      slot: payload.slot,
+      message: payload.message ?? null,
+    });
+    return;
+  }
+
+  pendingRegistrationMetadata.set(
+    `${payload.device_id}:${payload.nim}:${payload.slot}:${fingerprintId ?? ""}`,
+    { name, classCode: payload.class_code, timestamp: Date.now() }
+  );
+
+  await prisma.student.upsert({
+    where: { nim: payload.nim },
+    update: { name, isActive: true },
+    create: { nim: payload.nim, name, isActive: true },
+  });
+
+  console.log(
+    `[MQTT] Registration metadata received: nim=${payload.nim} slot=${payload.slot} finger_id=${fingerprintId ?? "null"}`
+  );
+}
+
+function parseRegistrationTemplateTopic(topic: string) {
+  const prefix = `${TOPIC_PREFIX}/mahasiswa/registrasi/template/`;
+  if (!topic.startsWith(prefix)) return null;
+
+  const parts = topic.slice(prefix.length).split("/");
+  if (parts.length < 4) return null;
+
+  const slot = Number(parts[2]);
+  const fingerprintId = Number(parts[3]);
+  if (!Number.isInteger(slot) || !Number.isInteger(fingerprintId)) return null;
+
+  return {
+    deviceId: parts[0],
+    nim: parts[1],
+    slot,
+    fingerprintId,
+  };
+}
+
+async function handleRegistrationTemplate(topic: string, templateBytes: Buffer) {
+  const parsed = parseRegistrationTemplateTopic(topic);
+  if (!parsed) {
+    console.warn("[MQTT] Invalid registration template topic:", topic);
+    return;
+  }
+
+  const metadataKey = `${parsed.deviceId}:${parsed.nim}:${parsed.slot}:${parsed.fingerprintId}`;
+  const metadata = pendingRegistrationMetadata.get(metadataKey);
+  const existingStudent = await prisma.student.findUnique({
+    where: { nim: parsed.nim },
+    select: { name: true },
+  });
+  const name = metadata?.name || existingStudent?.name || parsed.nim;
+
+  const { storeRegistrationTemplate } = await import(
+    "../modules/registration/registration.service"
+  );
+
+  const result = await storeRegistrationTemplate({
+    nim: parsed.nim,
+    name,
+    slot: parsed.slot,
+    fingerprintId: parsed.fingerprintId,
+    templateBytes,
+    deviceId: parsed.deviceId,
+    classCode: metadata?.classCode,
+  });
+
+  if (!result.ok) {
+    console.warn("[MQTT] Registration binary template store failed:", result);
+    return;
+  }
+
+  pendingRegistrationMetadata.delete(metadataKey);
+  console.log(
+    `[MQTT] Registration binary template stored: nim=${result.nim} slot=${result.slot} finger_id=${result.fingerprintIdOnDevice ?? "null"} size=${templateBytes.length}`
   );
 }
 
@@ -556,8 +475,9 @@ export function startMqttSubscriber() {
   const topics = [
     TOPICS.ATTENDANCE,
     TOPICS.DEVICE_PING,
-    TOPICS.TEMPLATE_CHUNK,
     TOPICS.TEMPLATE_REQUEST,
+    TOPICS.REGISTRATION_RESULT,
+    TOPICS.REGISTRATION_TEMPLATE,
   ];
 
   debugLog("Starting MQTT subscriber", {
@@ -597,13 +517,26 @@ export function startMqttSubscriber() {
     "message",
     async (topic: string, message: Buffer, packet: IPublishPacket) => {
       const route = resolveTopicRoute(topic);
-      const payload = parseJsonPayload(message);
 
-      if (!route || payload === null) {
+      if (!route) {
         debugLog("Ignoring message with unknown topic/payload", {
           topic,
           route,
-          payload_shape: describePayloadShape(payload),
+          packet: getPacketMetadata(packet),
+        });
+        return;
+      }
+
+      if (route === "registration/template") {
+        await handleRegistrationTemplate(topic, message);
+        return;
+      }
+
+      const payload = parseJsonPayload(message);
+      if (payload === null) {
+        debugLog("Ignoring message with invalid JSON payload", {
+          topic,
+          route,
           packet: getPacketMetadata(packet),
         });
         return;
@@ -639,19 +572,6 @@ export function startMqttSubscriber() {
           return;
         }
         await handleDevicePing(payload);
-        await syncTemplateToDevice(client, payload.device_id);
-        return;
-      }
-
-      if (route === "template/chunk") {
-        if (!isValidChunk(payload)) {
-          debugLog("Invalid template chunk payload", {
-            topic,
-            payload_shape: describePayloadShape(payload),
-          });
-          return;
-        }
-        await handleTemplateChunk(payload);
         return;
       }
 
@@ -664,6 +584,18 @@ export function startMqttSubscriber() {
           return;
         }
         await handleTemplateSyncRequest(payload);
+        return;
+      }
+
+      if (route === "registration/result") {
+        if (!isValidRegistrationResult(payload)) {
+          debugLog("Invalid registration result payload", {
+            topic,
+            payload_shape: describePayloadShape(payload),
+          });
+          return;
+        }
+        await handleRegistrationResult(payload);
       }
     }
   );
@@ -683,6 +615,12 @@ export async function publishMqtt(topic: string, payload: unknown) {
   const client = mqttClient ?? startMqttSubscriber();
   await waitForMqttConnected(client);
   await publishAsync(client, topic, payload);
+}
+
+export async function publishMqttBinary(topic: string, payload: Buffer | Uint8Array) {
+  const client = mqttClient ?? startMqttSubscriber();
+  await waitForMqttConnected(client);
+  await publishBinaryAsync(client, topic, payload);
 }
 
 export function getMqttServerTopic(deviceId: string, suffix: string) {
