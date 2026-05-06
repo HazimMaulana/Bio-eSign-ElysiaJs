@@ -1,32 +1,47 @@
-import mqtt, { type IPublishPacket } from "mqtt";
+import mqtt, { type IPublishPacket, type MqttClient } from "mqtt";
 import { prisma } from "./prisma";
 import { redis } from "./redis";
 import { encryptTemplate } from "./crypto";
 
 // MQTT topic definitions
-// bioesign/{deviceId}/attendance -> ESP32 reports check-in/check-out
-// bioesign/{deviceId}/ping -> ESP32 heartbeat
-// bioesign/{deviceId}/template/chunk -> ESP32 sends template chunks
-// bioesign/server/{deviceId}/template/manifest -> Server sends manifest to device
-// bioesign/server/{deviceId}/template/data -> Server sends template chunks to device
+// {prefix}/{deviceId}/attendance -> ESP32 reports check-in/check-out
+// {prefix}/{deviceId}/ping -> ESP32 heartbeat
+// {prefix}/{deviceId}/template/chunk -> ESP32 sends template chunks
+// {prefix}/server/{deviceId}/template/manifest -> Server sends manifest to device
+// {prefix}/server/{deviceId}/template/data -> Server sends template chunks to device
+
+const TOPIC_PREFIX = process.env.MQTT_TOPIC_PREFIX ?? "presence";
+const SERVER_TOPIC_PREFIX = `${TOPIC_PREFIX}/server`;
 
 const TOPICS = {
-  ATTENDANCE: "bioesign/+/attendance",
-  DEVICE_PING: "bioesign/+/ping",
-  TEMPLATE_CHUNK: "bioesign/+/template/chunk",
-} as const;
-
-
-const TOPIC_PATTERNS = {
-  ATTENDANCE: /^bioesign\/[^/]+\/attendance$/,
-  DEVICE_PING: /^bioesign\/[^/]+\/ping$/,
-  TEMPLATE_CHUNK: /^bioesign\/[^/]+\/template\/chunk$/,
+  ATTENDANCE: `${TOPIC_PREFIX}/+/attendance`,
+  DEVICE_PING: `${TOPIC_PREFIX}/+/ping`,
+  TEMPLATE_CHUNK: `${TOPIC_PREFIX}/+/template/chunk`,
+  TEMPLATE_REQUEST: `${TOPIC_PREFIX}/mahasiswa/templates/request`,
 } as const;
 
 const MQTT_DEBUG = (process.env.MQTT_DEBUG ?? "").toLowerCase() === "true";
 const SUBSCRIBE_QOS = 1;
+const TEMPLATE_SAMPLE = process.env.TEMPLATE_SAMPLE ?? "";
+const TEMPLATE_SYNC_CHUNK_SIZE = Math.max(
+  64,
+  Number(process.env.MQTT_TEMPLATE_CHUNK_SIZE ?? 512)
+);
+const TEMPLATE_SYNC_SLOT = Math.max(
+  1,
+  Number(process.env.MQTT_TEMPLATE_SLOT ?? 1)
+);
+const TEMPLATE_SYNC_STUDENT_ID =
+  process.env.MQTT_TEMPLATE_STUDENT_ID ?? "env-student-0001";
+const TEMPLATE_SYNC_TTL_SECONDS = Math.max(
+  30,
+  Number(process.env.MQTT_TEMPLATE_SYNC_TTL_SECONDS ?? 300)
+);
 
-type TopicRoute = "attendance" | "ping" | "template/chunk";
+type TopicRoute = "attendance" | "ping" | "template/chunk" | "template/request";
+
+let mqttClient: MqttClient | null = null;
+let subscriberStarted = false;
 
 // Template chunk reassembly buffer
 // Key: `{deviceId}:{studentId}:{slot}` -> chunks[]
@@ -71,6 +86,12 @@ interface TemplateChunkPayload {
   chunk_index: number;
   total_chunks: number;
   data: string;
+}
+
+interface TemplateSyncRequestPayload {
+  device_id: string;
+  action?: string;
+  class_code?: string;
 }
 
 function debugLog(message: string, metadata?: Record<string, unknown>) {
@@ -143,9 +164,20 @@ function summarizeTemplateChunkPayload(payload: TemplateChunkPayload) {
 }
 
 function resolveTopicRoute(topic: string): TopicRoute | null {
-  if (TOPIC_PATTERNS.ATTENDANCE.test(topic)) return "attendance";
-  if (TOPIC_PATTERNS.DEVICE_PING.test(topic)) return "ping";
-  if (TOPIC_PATTERNS.TEMPLATE_CHUNK.test(topic)) return "template/chunk";
+  if (!topic.startsWith(`${TOPIC_PREFIX}/`)) return null;
+
+  const fullSuffix = topic.slice(TOPIC_PREFIX.length + 1);
+  if (fullSuffix === "mahasiswa/templates/request") return "template/request";
+
+  const parts = topic.split("/");
+  if (parts.length < 3) return null;
+
+  const suffix = parts.slice(2).join("/");
+
+  if (suffix === "attendance") return "attendance";
+  if (suffix === "ping") return "ping";
+  if (suffix === "template/chunk") return "template/chunk";
+
   return null;
 }
 
@@ -179,9 +211,155 @@ function isValidChunk(p: unknown): p is TemplateChunkPayload {
   );
 }
 
+function isValidTemplateSyncRequest(p: unknown): p is TemplateSyncRequestPayload {
+  if (!p || typeof p !== "object") return false;
+  const o = p as Record<string, unknown>;
+  return typeof o.device_id === "string";
+}
+
 function extractDeviceId(topic: string): string | null {
   const parts = topic.split("/");
   return parts.length >= 2 ? parts[1] : null;
+}
+
+function parseJsonPayload(message: Buffer) {
+  try {
+    return JSON.parse(message.toString());
+  } catch (error) {
+    console.warn("[MQTT] Payload is not valid JSON:", message.toString());
+    if (MQTT_DEBUG) {
+      console.warn("[MQTT][DEBUG] JSON parse error:", error);
+    }
+    return null;
+  }
+}
+
+function chunkTemplate(template: string, chunkSize: number): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < template.length; i += chunkSize) {
+    chunks.push(template.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+function publishAsync(client: MqttClient, topic: string, payload: unknown) {
+  return new Promise<void>((resolve, reject) => {
+    const message = JSON.stringify(payload);
+
+    client.publish(topic, message, { qos: 1 }, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      console.log(`[MQTT] Published to ${topic}`);
+      resolve();
+    });
+  });
+}
+
+function waitForMqttConnected(client: MqttClient) {
+  if (client.connected) return Promise.resolve();
+
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("MQTT client is not connected"));
+    }, 10_000);
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      client.off("connect", onConnect);
+      client.off("error", onError);
+    };
+
+    const onConnect = () => {
+      cleanup();
+      resolve();
+    };
+
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+
+    client.once("connect", onConnect);
+    client.once("error", onError);
+  });
+}
+
+async function syncTemplateToDevice(
+  client: MqttClient,
+  deviceId: string
+): Promise<void> {
+  if (!TEMPLATE_SAMPLE) {
+    console.warn(
+      "[MQTT] TEMPLATE_SAMPLE kosong. Sync template dilewati untuk device:",
+      deviceId
+    );
+    return;
+  }
+
+  const cacheKey = `mqtt:template-sync:${deviceId}`;
+  const lastSync = await redis.get(cacheKey);
+  if (lastSync) {
+    debugLog("Template sync skipped (cached)", { device_id: deviceId });
+    return;
+  }
+
+  const chunks = chunkTemplate(TEMPLATE_SAMPLE, TEMPLATE_SYNC_CHUNK_SIZE);
+  if (chunks.length === 0) {
+    console.warn(
+      "[MQTT] TEMPLATE_SAMPLE menghasilkan 0 chunk. Sync dibatalkan.",
+      { device_id: deviceId }
+    );
+    return;
+  }
+
+  const manifestTopic = `${SERVER_TOPIC_PREFIX}/${deviceId}/template/manifest`;
+  const dataTopic = `${SERVER_TOPIC_PREFIX}/${deviceId}/template/data`;
+
+  const manifestPayload = {
+    device_id: deviceId,
+    student_id: TEMPLATE_SYNC_STUDENT_ID,
+    slot: TEMPLATE_SYNC_SLOT,
+    chunk_size: TEMPLATE_SYNC_CHUNK_SIZE,
+    total_chunks: chunks.length,
+    total_size: TEMPLATE_SAMPLE.length,
+    source: "env",
+    sent_at: new Date().toISOString(),
+  };
+
+  await publishAsync(client, manifestTopic, manifestPayload);
+
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    const payload = {
+      device_id: deviceId,
+      student_id: TEMPLATE_SYNC_STUDENT_ID,
+      slot: TEMPLATE_SYNC_SLOT,
+      chunk_index: chunkIndex,
+      total_chunks: chunks.length,
+      data: chunks[chunkIndex],
+    };
+
+    await publishAsync(client, dataTopic, payload);
+  }
+
+  await redis.set(
+    cacheKey,
+    new Date().toISOString(),
+    "EX",
+    TEMPLATE_SYNC_TTL_SECONDS
+  );
+
+  console.log(
+    `[MQTT] Template sync sent to ${deviceId} (${chunks.length} chunks)`
+  );
+  debugLog("Template sync completed", {
+    device_id: deviceId,
+    total_chunks: chunks.length,
+    total_size: TEMPLATE_SAMPLE.length,
+  });
 }
 
 async function handleAttendance(payload: AttendancePayload) {
@@ -211,7 +389,7 @@ async function handleAttendance(payload: AttendancePayload) {
   await prisma.attendanceEvent.create({
     data: {
       studentId: fingerprint?.studentId ?? null,
-      deviceId: device.deviceId,
+      deviceId: device.id,
       scheduleId: cachedScheduleId ?? null,
       action,
       matchScore: payload.match_score,
@@ -332,7 +510,31 @@ async function handleTemplateChunk(payload: TemplateChunkPayload) {
   }
 }
 
+async function handleTemplateSyncRequest(payload: TemplateSyncRequestPayload) {
+  const { syncClassForDeviceRequest } = await import(
+    "../modules/classes/classes.service"
+  );
+
+  const result = await syncClassForDeviceRequest(
+    payload.device_id,
+    payload.class_code
+  );
+
+  if (!result.ok) {
+    console.warn("[MQTT] Template sync request failed:", result);
+    return;
+  }
+
+  console.log(
+    `[MQTT] Template sync request served: device=${result.deviceId} class=${result.classCode}`
+  );
+}
+
 export function startMqttSubscriber() {
+  if (mqttClient && subscriberStarted) {
+    return mqttClient;
+  }
+
   const brokerUrl = process.env.MQTT_URL;
   const username = process.env.MQTT_USERNAME;
   const password = process.env.MQTT_PASSWORD;
@@ -351,8 +553,12 @@ export function startMqttSubscriber() {
 
   const clientId = `bioesign-server-${Date.now()}`;
 
-  // Untuk testing awal, pakai ini dulu
-  const topics = ["presence/#"];
+  const topics = [
+    TOPICS.ATTENDANCE,
+    TOPICS.DEVICE_PING,
+    TOPICS.TEMPLATE_CHUNK,
+    TOPICS.TEMPLATE_REQUEST,
+  ];
 
   debugLog("Starting MQTT subscriber", {
     broker_url: brokerUrl,
@@ -362,7 +568,7 @@ export function startMqttSubscriber() {
     debug_enabled: MQTT_DEBUG,
   });
 
-  const client = mqtt.connect(brokerUrl, {
+  const client = mqttClient ?? mqtt.connect(brokerUrl, {
     clientId,
     username,
     password,
@@ -370,6 +576,9 @@ export function startMqttSubscriber() {
     reconnectPeriod: 5000,
     connectTimeout: 10_000,
   });
+
+  mqttClient = client;
+  subscriberStarted = true;
 
   client.on("connect", () => {
     console.log(`[MQTT] Connected to broker: ${brokerUrl}`);
@@ -387,10 +596,75 @@ export function startMqttSubscriber() {
   client.on(
     "message",
     async (topic: string, message: Buffer, packet: IPublishPacket) => {
-      console.log("[MQTT TEST] Topic:", topic);
-      console.log("[MQTT TEST] Message:", message.toString());
+      const route = resolveTopicRoute(topic);
+      const payload = parseJsonPayload(message);
 
-      // kode lama kamu lanjut di bawah sini
+      if (!route || payload === null) {
+        debugLog("Ignoring message with unknown topic/payload", {
+          topic,
+          route,
+          payload_shape: describePayloadShape(payload),
+          packet: getPacketMetadata(packet),
+        });
+        return;
+      }
+
+      const topicDeviceId = extractDeviceId(topic);
+      if (topicDeviceId && payload.device_id && topicDeviceId !== payload.device_id) {
+        debugLog("Device ID mismatch between topic and payload", {
+          topic_device_id: topicDeviceId,
+          payload_device_id: payload.device_id,
+          topic,
+        });
+      }
+
+      if (route === "attendance") {
+        if (!isValidAttendance(payload)) {
+          debugLog("Invalid attendance payload", {
+            topic,
+            payload_shape: describePayloadShape(payload),
+          });
+          return;
+        }
+        await handleAttendance(payload);
+        return;
+      }
+
+      if (route === "ping") {
+        if (!isValidPing(payload)) {
+          debugLog("Invalid ping payload", {
+            topic,
+            payload_shape: describePayloadShape(payload),
+          });
+          return;
+        }
+        await handleDevicePing(payload);
+        await syncTemplateToDevice(client, payload.device_id);
+        return;
+      }
+
+      if (route === "template/chunk") {
+        if (!isValidChunk(payload)) {
+          debugLog("Invalid template chunk payload", {
+            topic,
+            payload_shape: describePayloadShape(payload),
+          });
+          return;
+        }
+        await handleTemplateChunk(payload);
+        return;
+      }
+
+      if (route === "template/request") {
+        if (!isValidTemplateSyncRequest(payload)) {
+          debugLog("Invalid template sync request payload", {
+            topic,
+            payload_shape: describePayloadShape(payload),
+          });
+          return;
+        }
+        await handleTemplateSyncRequest(payload);
+      }
     }
   );
 
@@ -403,4 +677,14 @@ export function startMqttSubscriber() {
   });
 
   return client;
+}
+
+export async function publishMqtt(topic: string, payload: unknown) {
+  const client = mqttClient ?? startMqttSubscriber();
+  await waitForMqttConnected(client);
+  await publishAsync(client, topic, payload);
+}
+
+export function getMqttServerTopic(deviceId: string, suffix: string) {
+  return `${SERVER_TOPIC_PREFIX}/${deviceId}/${suffix}`;
 }

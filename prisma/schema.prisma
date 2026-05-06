@@ -78,6 +78,7 @@ model Student {
   department   Department?          @relation(fields: [departmentId], references: [id])
   fingerprints StudentFingerprint[]
   attendances  AttendanceEvent[]
+  classes      AttendanceClassStudent[]
   createdAt    DateTime             @default(now()) @map("created_at")
   updatedAt    DateTime             @updatedAt @map("updated_at")
 
@@ -142,6 +143,30 @@ model Course {
   createdAt DateTime   @default(now()) @map("created_at")
 
   @@map("courses")
+}
+
+model AttendanceClass {
+  id        String                   @id @default(uuid())
+  code      String                   @unique
+  name      String
+  students  AttendanceClassStudent[]
+  createdAt DateTime                 @default(now()) @map("created_at")
+  updatedAt DateTime                 @updatedAt @map("updated_at")
+
+  @@map("attendance_classes")
+}
+
+model AttendanceClassStudent {
+  id        String          @id @default(uuid())
+  classId   String          @map("class_id")
+  class     AttendanceClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  studentId String          @map("student_id")
+  student   Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  @@unique([classId, studentId])
+  @@index([studentId])
+  @@map("attendance_class_students")
 }
 
 model Schedule {

@@ -10,6 +10,7 @@ import { userRoutes } from "./modules/users/users.route";
 import { scheduleRoutes } from "./modules/schedules/schedules.route";
 import { deviceRoutes } from "./modules/devices/devices.route";
 import { attendanceRoutes } from "./modules/attendance/attendance.route";
+import { classRoutes } from "./modules/classes/classes.route";
 
 // ─── Start MQTT Subscriber ─────────────────────────────
 startMqttSubscriber();
@@ -68,6 +69,7 @@ const app = new Elysia()
       .use(userRoutes)
       .use(scheduleRoutes)
       .use(deviceRoutes)
+      .use(classRoutes)
       .use(attendanceRoutes)
   )
   .listen(3000);

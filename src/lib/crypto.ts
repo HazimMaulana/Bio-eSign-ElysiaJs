@@ -1,4 +1,4 @@
-import { crypto } from "bun";
+import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 
 const ENCRYPTION_KEY = process.env.BIOMETRIC_ENCRYPTION_KEY || "your-32-char-secret-key-12345678";
 
@@ -6,10 +6,10 @@ const ENCRYPTION_KEY = process.env.BIOMETRIC_ENCRYPTION_KEY || "your-32-char-sec
  * Encrypt biometric template using AES-256-GCM
  */
 export async function encryptTemplate(template: string) {
-  const iv = Buffer.from(crypto.getRandomValues(new Uint8Array(12)));
+  const iv = randomBytes(12);
   const key = Buffer.from(ENCRYPTION_KEY, 'utf-8');
   
-  const cipher = require('node:crypto').createCipheriv('aes-256-gcm', key, iv);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
   
   let encrypted = cipher.update(template, 'utf8', 'base64');
   encrypted += cipher.final('base64');
@@ -31,7 +31,7 @@ export async function decryptTemplate(encrypted: string, ivBase64: string, tagBa
   const tag = Buffer.from(tagBase64, 'base64');
   const key = Buffer.from(ENCRYPTION_KEY, 'utf-8');
   
-  const decipher = require('node:crypto').createDecipheriv('aes-256-gcm', key, iv);
+  const decipher = createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(tag);
   
   let decrypted = decipher.update(encrypted, 'base64', 'utf8');
