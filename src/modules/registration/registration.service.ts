@@ -1,7 +1,6 @@
 import { prisma } from "../../lib/prisma";
 import { encryptTemplateBytes } from "../../lib/crypto";
 import { publishMqtt } from "../../lib/mqtt";
-import { redis } from "../../lib/redis";
 
 const DEVICE_TOPIC_PREFIX = process.env.MQTT_DEVICE_TOPIC_PREFIX ?? "presence";
 
@@ -163,33 +162,6 @@ export async function storeRegistrationTemplate(input: StoreRegistrationTemplate
       encryptionTag: tag,
     },
   });
-
-  const resolvedClassCode =
-    input.classCode ??
-    (input.deviceId ? await redis.get(`active_class:${input.deviceId}`) : null);
-
-  if (resolvedClassCode && resolvedClassCode !== "STANDBY") {
-    const attendanceClass = await prisma.attendanceClass.findUnique({
-      where: { code: resolvedClassCode },
-      select: { id: true },
-    });
-
-    if (attendanceClass) {
-      await prisma.attendanceClassStudent.upsert({
-        where: {
-          classId_studentId: {
-            classId: attendanceClass.id,
-            studentId: student.id,
-          },
-        },
-        update: {},
-        create: {
-          classId: attendanceClass.id,
-          studentId: student.id,
-        },
-      });
-    }
-  }
 
   await prisma.securityAuditLog.create({
     data: {

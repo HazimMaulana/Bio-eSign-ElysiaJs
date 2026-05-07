@@ -3,12 +3,54 @@ import { prisma } from "../../lib/prisma";
 import { redis } from "../../lib/redis";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
 
+function mapDeviceBody(body: {
+  deviceId?: string;
+  device_id?: string;
+  deviceCode?: string;
+  device_code?: string;
+  status?: "ONLINE" | "OFFLINE" | "MAINTENANCE" | "ERROR";
+  firmwareVersion?: string | null;
+  firmware_version?: string | null;
+}) {
+  const deviceCode =
+    body.deviceCode ?? body.device_code ?? body.deviceId ?? body.device_id;
+
+  return {
+    ...(body.deviceCode !== undefined ||
+    body.device_code !== undefined ||
+    body.deviceId !== undefined ||
+    body.device_id !== undefined
+      ? { deviceId: deviceCode }
+      : {}),
+    ...(body.status !== undefined ? { status: body.status } : {}),
+    ...(body.firmwareVersion !== undefined || body.firmware_version !== undefined
+      ? { firmwareVersion: body.firmwareVersion ?? body.firmware_version ?? null }
+      : {}),
+  };
+}
+
+async function findDeviceIdentity(identifier: string) {
+  return await prisma.device.findFirst({
+    where: {
+      OR: [{ id: identifier }, { deviceId: identifier }],
+    },
+    select: { id: true },
+  });
+}
+
 export const deviceRoutes = new Elysia({ prefix: "/devices" })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
   .get("/", async () => {
     return await prisma.device.findMany({
       orderBy: { createdAt: "desc" },
+      include: {
+        classes: {
+          include: {
+            department: true,
+          },
+        },
+      },
     });
   })
   .get("/online", async () => {
@@ -21,9 +63,16 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
     return { online: onlineDeviceIds, count: onlineDeviceIds.length };
   })
   .get("/:id", async ({ params, set }) => {
-    const device = await prisma.device.findUnique({
-      where: { id: params.id },
+    const device = await prisma.device.findFirst({
+      where: {
+        OR: [{ id: params.id }, { deviceId: params.id }],
+      },
       include: {
+        classes: {
+          include: {
+            department: true,
+          },
+        },
         schedules: { include: { course: true, lecturer: true } },
       },
     });
@@ -36,20 +85,29 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
     params: t.Object({ id: t.String() }),
   })
   .post("/", async ({ body, set }) => {
+    const data = mapDeviceBody(body);
+
+    if (!data.deviceId) {
+      set.status = 400;
+      return { error: "device_code is required" };
+    }
+
     const device = await prisma.device.create({
       data: {
-        deviceId: body.deviceId,
-        locationName: body.locationName,
+        ...data,
+        deviceId: data.deviceId,
         status: body.status ?? "OFFLINE",
-        firmwareVersion: body.firmwareVersion,
       },
+      include: { classes: true },
     });
     set.status = 201;
     return device;
   }, {
     body: t.Object({
-      deviceId: t.String(),
-      locationName: t.Optional(t.Union([t.String(), t.Null()])),
+      deviceId: t.Optional(t.String()),
+      device_id: t.Optional(t.String()),
+      deviceCode: t.Optional(t.String()),
+      device_code: t.Optional(t.String()),
       status: t.Optional(
         t.Union([
           t.Literal("ONLINE"),
@@ -59,23 +117,28 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
         ])
       ),
       firmwareVersion: t.Optional(t.Union([t.String(), t.Null()])),
+      firmware_version: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
   .put("/:id", async ({ params, body, set }) => {
-    const existing = await prisma.device.findUnique({ where: { id: params.id } });
+    const existing = await findDeviceIdentity(params.id);
     if (!existing) {
       set.status = 404;
       return { error: "Device not found" };
     }
     const device = await prisma.device.update({
-      where: { id: params.id },
-      data: body,
+      where: { id: existing.id },
+      data: mapDeviceBody(body),
+      include: { classes: true },
     });
     return device;
   }, {
     params: t.Object({ id: t.String() }),
     body: t.Object({
-      locationName: t.Optional(t.Union([t.String(), t.Null()])),
+      deviceId: t.Optional(t.String()),
+      device_id: t.Optional(t.String()),
+      deviceCode: t.Optional(t.String()),
+      device_code: t.Optional(t.String()),
       status: t.Optional(
         t.Union([
           t.Literal("ONLINE"),
@@ -85,11 +148,19 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
         ])
       ),
       firmwareVersion: t.Optional(t.Union([t.String(), t.Null()])),
+      firmware_version: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
   .delete("/:id", async ({ params, set }) => {
+    const identity = await findDeviceIdentity(params.id);
+
+    if (!identity) {
+      set.status = 404;
+      return { error: "Device not found" };
+    }
+
     const existing = await prisma.device.findUnique({
-      where: { id: params.id },
+      where: { id: identity.id },
       include: { _count: { select: { schedules: true, attendances: true } } },
     });
     if (!existing) {
@@ -104,7 +175,7 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
         attendances: existing._count.attendances,
       };
     }
-    await prisma.device.delete({ where: { id: params.id } });
+    await prisma.device.delete({ where: { id: identity.id } });
     return { message: "Device deleted" };
   }, {
     params: t.Object({ id: t.String() }),

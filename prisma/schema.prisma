@@ -53,16 +53,32 @@ model User {
   @@map("users")
 }
 
-// ─── Department Management ──────────────────────────────
+// ─── Faculty & Department Management ────────────────────
+
+model Faculty {
+  id          String       @id @default(uuid())
+  code        String       @unique // e.g., 'FTI', 'FEB'
+  name        String
+  departments Department[]
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  @@map("faculties")
+}
 
 model Department {
-  id        String     @id @default(uuid())
-  code      String     @unique // e.g., 'FTI', 'FEB'
+  id        String            @id @default(uuid())
+  code      String            @unique // e.g., 'IF', 'SI'
   name      String
+  facultyId String?           @map("faculty_id")
+  faculty   Faculty?          @relation(fields: [facultyId], references: [id], onDelete: SetNull)
   students  Student[]
   lecturers Lecturer[]
-  createdAt DateTime   @default(now()) @map("created_at")
+  courses   Course[]
+  classes   Class[]
+  createdAt DateTime          @default(now()) @map("created_at")
 
+  @@index([facultyId])
   @@map("departments")
 }
 
@@ -78,7 +94,6 @@ model Student {
   department   Department?          @relation(fields: [departmentId], references: [id])
   fingerprints StudentFingerprint[]
   attendances  AttendanceEvent[]
-  classes      AttendanceClassStudent[]
   createdAt    DateTime             @default(now()) @map("created_at")
   updatedAt    DateTime             @updatedAt @map("updated_at")
 
@@ -109,10 +124,10 @@ model StudentFingerprint {
 model Device {
   id              String            @id @default(uuid())
   deviceId        String            @unique @map("device_id") // e.g., 'ESP32_LAB_01'
-  locationName    String?           @map("location_name") // e.g., 'Gedung A, Ruang 302'
   status          DeviceStatus      @default(OFFLINE)
   lastPing        DateTime?         @map("last_ping")
   firmwareVersion String?           @map("firmware_version")
+  classes         Class[]
   attendances     AttendanceEvent[]
   schedules       Schedule[]
   createdAt       DateTime          @default(now()) @map("created_at")
@@ -123,51 +138,45 @@ model Device {
 // ─── Academic Logic ─────────────────────────────────────
 
 model Lecturer {
-  id           String     @id @default(uuid())
-  nidn         String     @unique // National Lecturer ID
-  name         String
-  email        String     @unique
-  departmentId String     @map("department_id")
-  department   Department @relation(fields: [departmentId], references: [id])
-  schedules    Schedule[]
-  createdAt    DateTime   @default(now()) @map("created_at")
+  id                String            @id @default(uuid())
+  nidn              String            @unique // National Lecturer ID
+  name              String
+  email             String            @unique
+  departmentId      String            @map("department_id")
+  department        Department        @relation(fields: [departmentId], references: [id])
+  schedules         Schedule[]
+  createdAt         DateTime          @default(now()) @map("created_at")
 
   @@map("lecturers")
 }
 
 model Course {
-  id        String     @id @default(uuid())
-  code      String     @unique
-  name      String
-  credits   Int        @default(3)
-  schedules Schedule[]
-  createdAt DateTime   @default(now()) @map("created_at")
+  id             String      @id @default(uuid())
+  code           String      @unique
+  name           String
+  departmentCode String?     @map("department_code")
+  department     Department? @relation(fields: [departmentCode], references: [code], onDelete: SetNull)
+  schedules      Schedule[]
+  createdAt      DateTime    @default(now()) @map("created_at")
 
+  @@index([departmentCode])
   @@map("courses")
 }
 
-model AttendanceClass {
-  id        String                   @id @default(uuid())
-  code      String                   @unique
-  name      String
-  students  AttendanceClassStudent[]
-  createdAt DateTime                 @default(now()) @map("created_at")
-  updatedAt DateTime                 @updatedAt @map("updated_at")
+model Class {
+  id             String      @id @default(uuid())
+  code           String      @unique
+  name           String
+  departmentCode String?     @map("department_code")
+  department     Department? @relation(fields: [departmentCode], references: [code], onDelete: SetNull)
+  deviceCode     String?     @map("device_code")
+  device         Device?     @relation(fields: [deviceCode], references: [deviceId], onDelete: SetNull)
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
 
-  @@map("attendance_classes")
-}
-
-model AttendanceClassStudent {
-  id        String          @id @default(uuid())
-  classId   String          @map("class_id")
-  class     AttendanceClass @relation(fields: [classId], references: [id], onDelete: Cascade)
-  studentId String          @map("student_id")
-  student   Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  createdAt DateTime        @default(now()) @map("created_at")
-
-  @@unique([classId, studentId])
-  @@index([studentId])
-  @@map("attendance_class_students")
+  @@index([departmentCode])
+  @@index([deviceCode])
+  @@map("classes")
 }
 
 model Schedule {

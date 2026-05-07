@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { prisma } from "./lib/prisma";
 import { startMqttSubscriber } from "./lib/mqtt";
 import { jwtPlugin } from "./middleware/auth";
+import { facultyRoutes } from "./modules/faculties/faculties.route";
 import { departmentRoutes } from "./modules/departments/departments.route";
 import { studentRoutes } from "./modules/students/students.route";
 import { lecturerRoutes } from "./modules/lecturers/lecturers.route";
@@ -63,6 +64,7 @@ const app = new Elysia()
         }),
       })
       // ─── Resource Routes ──────────────────────────────
+      .use(facultyRoutes)
       .use(departmentRoutes)
       .use(studentRoutes)
       .use(lecturerRoutes)

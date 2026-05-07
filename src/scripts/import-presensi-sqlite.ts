@@ -23,11 +23,6 @@ type LegacyClass = {
   updated_at: string;
 };
 
-type LegacyClassStudent = {
-  class_id: number;
-  student_id: number;
-};
-
 type LegacyFingerprint = {
   student_id: number;
   slot: number;
@@ -123,9 +118,6 @@ async function main() {
 
   const students = legacy.query("SELECT * FROM students ORDER BY id").all() as LegacyStudent[];
   const classes = legacy.query("SELECT * FROM classes ORDER BY id").all() as LegacyClass[];
-  const classStudents = legacy
-    .query("SELECT * FROM class_students ORDER BY id")
-    .all() as LegacyClassStudent[];
   const fingerprints = legacy
     .query("SELECT * FROM student_fingerprints ORDER BY id")
     .all() as LegacyFingerprint[];
@@ -135,7 +127,6 @@ async function main() {
 
   const studentIdByLegacyId = new Map<number, string>();
   const studentIdByNim = new Map<string, string>();
-  const classIdByLegacyId = new Map<number, string>();
   const fingerprintStudentIdByDeviceId = new Map<number, string>();
 
   const deviceIds = [...new Set(events.map((event) => event.device_id))];
@@ -146,7 +137,6 @@ async function main() {
         update: {},
         create: {
           deviceId,
-          locationName: "Dummy imported from presensi.db",
           status: "OFFLINE",
         },
       })
@@ -175,7 +165,7 @@ async function main() {
   }
 
   for (const attendanceClass of classes) {
-    const saved = await prisma.attendanceClass.upsert({
+    await prisma.class.upsert({
       where: { code: attendanceClass.code },
       update: {
         name: attendanceClass.name,
@@ -183,29 +173,6 @@ async function main() {
       create: {
         code: attendanceClass.code,
         name: attendanceClass.name,
-      },
-    });
-
-    classIdByLegacyId.set(attendanceClass.id, saved.id);
-  }
-
-  for (const classStudent of classStudents) {
-    const classId = classIdByLegacyId.get(classStudent.class_id);
-    const studentId = studentIdByLegacyId.get(classStudent.student_id);
-
-    if (!classId || !studentId) continue;
-
-    await prisma.attendanceClassStudent.upsert({
-      where: {
-        classId_studentId: {
-          classId,
-          studentId,
-        },
-      },
-      update: {},
-      create: {
-        classId,
-        studentId,
       },
     });
   }

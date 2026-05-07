@@ -356,7 +356,7 @@ async function handleTemplateSyncRequest(payload: TemplateSyncRequestPayload) {
   }
 
   console.log(
-    `[MQTT] Template sync request served: device=${result.deviceId} class=${result.classCode}`
+    `[MQTT] Template sync request served: device=${result.deviceCode} class=${result.classCode}`
   );
 }
 
