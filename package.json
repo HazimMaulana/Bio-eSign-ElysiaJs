@@ -6,6 +6,7 @@
     "dev": "bun run --watch src/index.ts",
     "link-ideas": "powershell -Command \"if (-not (Test-Path docs)) { New-Item -ItemType Directory -Path docs }; cmd /c mklink /J docs\\ideas 'C:\\Users\\ASUS\\Documents\\My Ideas'\"",
     "loadtest:mqtt-template": "bun run src/scripts/loadtest-mqtt-template.ts",
+    "seed:admin": "bun run src/scripts/seed-admin.ts",
     "seed:presensi": "bun run src/scripts/import-presensi-sqlite.ts"
   },
   "dependencies": {

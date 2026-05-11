@@ -4,24 +4,15 @@ import { jwtPlugin, authGuard } from "../../middleware/auth";
 import { decryptTemplateBytes } from "../../lib/crypto";
 
 function getDepartmentCode(body: {
-  departmentId?: string | null;
-  department_id?: string | null;
   departmentCode?: string | null;
   department_code?: string | null;
 }) {
-  return (
-    body.departmentCode ??
-    body.department_code ??
-    body.departmentId ??
-    body.department_id
-  );
+  return body.departmentCode ?? body.department_code;
 }
 
-async function findStudentIdentity(identifier: string) {
-  return await prisma.student.findFirst({
-    where: {
-      OR: [{ id: identifier }, { nim: identifier }],
-    },
+async function findStudentIdentity(nim: string) {
+  return await prisma.student.findUnique({
+    where: { nim },
     select: { id: true },
   });
 }
@@ -31,8 +22,6 @@ async function buildStudentData(body: {
   name?: string;
   email?: string | null;
   isActive?: boolean;
-  departmentId?: string | null;
-  department_id?: string | null;
   departmentCode?: string | null;
   department_code?: string | null;
 }) {
@@ -51,9 +40,7 @@ async function buildStudentData(body: {
 
   if (
     body.departmentCode !== undefined ||
-    body.department_code !== undefined ||
-    body.departmentId !== undefined ||
-    body.department_id !== undefined
+    body.department_code !== undefined
   ) {
     const departmentCode = getDepartmentCode(body);
 
@@ -90,11 +77,9 @@ export const studentRoutes = new Elysia({ prefix: "/students" })
     });
     return students;
   })
-  .get("/:id", async ({ params, set }) => {
-    const student = await prisma.student.findFirst({
-      where: {
-        OR: [{ id: params.id }, { nim: params.id }],
-      },
+  .get("/:nim", async ({ params, set }) => {
+    const student = await prisma.student.findUnique({
+      where: { nim: params.nim },
       include: {
         department: { include: { faculty: true } },
         fingerprints: {
@@ -114,16 +99,11 @@ export const studentRoutes = new Elysia({ prefix: "/students" })
     }
     return student;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ nim: t.String() }),
   })
-  .get("/:id/fingerprints/:slot/template", async ({ params, set }) => {
-    const student = await prisma.student.findFirst({
-      where: { 
-        OR: [
-          { id: params.id },
-          { nim: params.id }
-        ] 
-      }
+  .get("/:nim/fingerprints/:slot/template", async ({ params, set }) => {
+    const student = await prisma.student.findUnique({
+      where: { nim: params.nim },
     });
 
     if (!student) {
@@ -156,7 +136,7 @@ export const studentRoutes = new Elysia({ prefix: "/students" })
     return decryptedBytes;
   }, {
     params: t.Object({
-      id: t.String(),
+      nim: t.String(),
       slot: t.Numeric(),
     }),
   })
@@ -184,14 +164,12 @@ export const studentRoutes = new Elysia({ prefix: "/students" })
       name: t.String(),
       email: t.Optional(t.Union([t.String(), t.Null()])),
       isActive: t.Optional(t.Boolean()),
-      departmentId: t.Optional(t.Union([t.String(), t.Null()])),
-      department_id: t.Optional(t.Union([t.String(), t.Null()])),
       departmentCode: t.Optional(t.Union([t.String(), t.Null()])),
       department_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
-  .put("/:id", async ({ params, body, set }) => {
-    const existing = await findStudentIdentity(params.id);
+  .put("/:nim", async ({ params, body, set }) => {
+    const existing = await findStudentIdentity(params.nim);
     if (!existing) {
       set.status = 404;
       return { error: "Student not found" };
@@ -209,20 +187,18 @@ export const studentRoutes = new Elysia({ prefix: "/students" })
     });
     return student;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ nim: t.String() }),
     body: t.Object({
       nim: t.Optional(t.String()),
       name: t.Optional(t.String()),
       email: t.Optional(t.Union([t.String(), t.Null()])),
       isActive: t.Optional(t.Boolean()),
-      departmentId: t.Optional(t.Union([t.String(), t.Null()])),
-      department_id: t.Optional(t.Union([t.String(), t.Null()])),
       departmentCode: t.Optional(t.Union([t.String(), t.Null()])),
       department_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
-  .delete("/:id", async ({ params, set }) => {
-    const existing = await findStudentIdentity(params.id);
+  .delete("/:nim", async ({ params, set }) => {
+    const existing = await findStudentIdentity(params.nim);
     if (!existing) {
       set.status = 404;
       return { error: "Student not found" };
@@ -230,5 +206,5 @@ export const studentRoutes = new Elysia({ prefix: "/students" })
     await prisma.student.delete({ where: { id: existing.id } });
     return { message: "Student deleted" };
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ nim: t.String() }),
   });

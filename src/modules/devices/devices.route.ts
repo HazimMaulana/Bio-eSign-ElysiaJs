@@ -29,11 +29,9 @@ function mapDeviceBody(body: {
   };
 }
 
-async function findDeviceIdentity(identifier: string) {
-  return await prisma.device.findFirst({
-    where: {
-      OR: [{ id: identifier }, { deviceId: identifier }],
-    },
+async function findDeviceIdentity(deviceId: string) {
+  return await prisma.device.findUnique({
+    where: { deviceId },
     select: { id: true },
   });
 }
@@ -62,11 +60,9 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
     }
     return { online: onlineDeviceIds, count: onlineDeviceIds.length };
   })
-  .get("/:id", async ({ params, set }) => {
-    const device = await prisma.device.findFirst({
-      where: {
-        OR: [{ id: params.id }, { deviceId: params.id }],
-      },
+  .get("/:deviceCode", async ({ params, set }) => {
+    const device = await prisma.device.findUnique({
+      where: { deviceId: params.deviceCode },
       include: {
         classes: {
           include: {
@@ -82,7 +78,7 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
     }
     return device;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ deviceCode: t.String() }),
   })
   .post("/", async ({ body, set }) => {
     const data = mapDeviceBody(body);
@@ -120,8 +116,8 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
       firmware_version: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
-  .put("/:id", async ({ params, body, set }) => {
-    const existing = await findDeviceIdentity(params.id);
+  .put("/:deviceCode", async ({ params, body, set }) => {
+    const existing = await findDeviceIdentity(params.deviceCode);
     if (!existing) {
       set.status = 404;
       return { error: "Device not found" };
@@ -133,7 +129,7 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
     });
     return device;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ deviceCode: t.String() }),
     body: t.Object({
       deviceId: t.Optional(t.String()),
       device_id: t.Optional(t.String()),
@@ -151,8 +147,8 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
       firmware_version: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
-  .delete("/:id", async ({ params, set }) => {
-    const identity = await findDeviceIdentity(params.id);
+  .delete("/:deviceCode", async ({ params, set }) => {
+    const identity = await findDeviceIdentity(params.deviceCode);
 
     if (!identity) {
       set.status = 404;
@@ -178,5 +174,5 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
     await prisma.device.delete({ where: { id: identity.id } });
     return { message: "Device deleted" };
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ deviceCode: t.String() }),
   });

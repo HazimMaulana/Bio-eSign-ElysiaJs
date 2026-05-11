@@ -2,11 +2,9 @@ import { Elysia, t } from "elysia";
 import { prisma } from "../../lib/prisma";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
 
-async function findFacultyIdentity(identifier: string) {
-  return await prisma.faculty.findFirst({
-    where: {
-      OR: [{ id: identifier }, { code: identifier }],
-    },
+async function findFacultyIdentity(code: string) {
+  return await prisma.faculty.findUnique({
+    where: { code },
     select: { id: true },
   });
 }
@@ -22,11 +20,9 @@ export const facultyRoutes = new Elysia({ prefix: "/faculties" })
       },
     });
   })
-  .get("/:id", async ({ params, set }) => {
-    const faculty = await prisma.faculty.findFirst({
-      where: {
-        OR: [{ id: params.id }, { code: params.id }],
-      },
+  .get("/:code", async ({ params, set }) => {
+    const faculty = await prisma.faculty.findUnique({
+      where: { code: params.code },
       include: {
         departments: {
           orderBy: { name: "asc" },
@@ -52,7 +48,7 @@ export const facultyRoutes = new Elysia({ prefix: "/faculties" })
 
     return faculty;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ code: t.String() }),
   })
   .post("/", async ({ body, set }) => {
     const faculty = await prisma.faculty.create({
@@ -73,8 +69,8 @@ export const facultyRoutes = new Elysia({ prefix: "/faculties" })
       name: t.String(),
     }),
   })
-  .put("/:id", async ({ params, body, set }) => {
-    const existing = await findFacultyIdentity(params.id);
+  .put("/:code", async ({ params, body, set }) => {
+    const existing = await findFacultyIdentity(params.code);
 
     if (!existing) {
       set.status = 404;
@@ -91,14 +87,14 @@ export const facultyRoutes = new Elysia({ prefix: "/faculties" })
 
     return faculty;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ code: t.String() }),
     body: t.Object({
       code: t.Optional(t.String()),
       name: t.Optional(t.String()),
     }),
   })
-  .delete("/:id", async ({ params, set }) => {
-    const identity = await findFacultyIdentity(params.id);
+  .delete("/:code", async ({ params, set }) => {
+    const identity = await findFacultyIdentity(params.code);
 
     if (!identity) {
       set.status = 404;
@@ -126,5 +122,5 @@ export const facultyRoutes = new Elysia({ prefix: "/faculties" })
     await prisma.faculty.delete({ where: { id: identity.id } });
     return { message: "Faculty deleted" };
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ code: t.String() }),
   });

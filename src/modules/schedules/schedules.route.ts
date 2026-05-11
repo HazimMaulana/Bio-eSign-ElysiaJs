@@ -3,6 +3,64 @@ import { prisma } from "../../lib/prisma";
 import { redis } from "../../lib/redis";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
 
+async function resolveScheduleData(body: {
+  courseCode?: string;
+  course_code?: string;
+  lecturerNidn?: string;
+  lecturer_nidn?: string;
+  deviceCode?: string;
+  device_code?: string;
+  dayOfWeek?: number;
+  startTime?: string;
+  endTime?: string;
+  roomName?: string | null;
+}) {
+  const data: Record<string, unknown> = {};
+
+  const courseCode = body.courseCode ?? body.course_code;
+  if (courseCode !== undefined) {
+    const course = await prisma.course.findUnique({
+      where: { code: courseCode },
+      select: { id: true },
+    });
+    if (!course) {
+      return { ok: false as const, status: 404, error: "Course code not found" };
+    }
+    data.courseId = course.id;
+  }
+
+  const lecturerNidn = body.lecturerNidn ?? body.lecturer_nidn;
+  if (lecturerNidn !== undefined) {
+    const lecturer = await prisma.lecturer.findUnique({
+      where: { nidn: lecturerNidn },
+      select: { id: true },
+    });
+    if (!lecturer) {
+      return { ok: false as const, status: 404, error: "Lecturer NIDN not found" };
+    }
+    data.lecturerId = lecturer.id;
+  }
+
+  const deviceCode = body.deviceCode ?? body.device_code;
+  if (deviceCode !== undefined) {
+    const device = await prisma.device.findUnique({
+      where: { deviceId: deviceCode },
+      select: { id: true },
+    });
+    if (!device) {
+      return { ok: false as const, status: 404, error: "Device code not found" };
+    }
+    data.deviceId = device.id;
+  }
+
+  if (body.dayOfWeek !== undefined) data.dayOfWeek = body.dayOfWeek;
+  if (body.startTime !== undefined) data.startTime = new Date(body.startTime);
+  if (body.endTime !== undefined) data.endTime = new Date(body.endTime);
+  if (body.roomName !== undefined) data.roomName = body.roomName;
+
+  return { ok: true as const, data };
+}
+
 export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
@@ -27,11 +85,24 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
     params: t.Object({ id: t.String() }),
   })
   .post("/", async ({ body, set }) => {
+    const result = await resolveScheduleData(body);
+    if (!result.ok) {
+      set.status = result.status;
+      return { error: result.error };
+    }
+    if (!result.data.courseId || !result.data.lecturerId || !result.data.deviceId) {
+      set.status = 400;
+      return {
+        error: "courseCode, lecturerNidn, and deviceCode are required",
+      };
+    }
+
     const schedule = await prisma.schedule.create({
       data: {
-        courseId: body.courseId,
-        lecturerId: body.lecturerId,
-        deviceId: body.deviceId,
+        ...result.data,
+        courseId: result.data.courseId as string,
+        lecturerId: result.data.lecturerId as string,
+        deviceId: result.data.deviceId as string,
         dayOfWeek: body.dayOfWeek,
         startTime: new Date(body.startTime),
         endTime: new Date(body.endTime),
@@ -43,9 +114,12 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
     return schedule;
   }, {
     body: t.Object({
-      courseId: t.String(),
-      lecturerId: t.String(),
-      deviceId: t.String(),
+      courseCode: t.Optional(t.String()),
+      course_code: t.Optional(t.String()),
+      lecturerNidn: t.Optional(t.String()),
+      lecturer_nidn: t.Optional(t.String()),
+      deviceCode: t.Optional(t.String()),
+      device_code: t.Optional(t.String()),
       dayOfWeek: t.Number({ minimum: 0, maximum: 6 }),
       startTime: t.String(),
       endTime: t.String(),
@@ -58,26 +132,27 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
       set.status = 404;
       return { error: "Schedule not found" };
     }
-    const data: Record<string, unknown> = {};
-    if (body.courseId !== undefined) data.courseId = body.courseId;
-    if (body.lecturerId !== undefined) data.lecturerId = body.lecturerId;
-    if (body.deviceId !== undefined) data.deviceId = body.deviceId;
-    if (body.dayOfWeek !== undefined) data.dayOfWeek = body.dayOfWeek;
-    if (body.startTime !== undefined) data.startTime = new Date(body.startTime);
-    if (body.endTime !== undefined) data.endTime = new Date(body.endTime);
-    if (body.roomName !== undefined) data.roomName = body.roomName;
+    const result = await resolveScheduleData(body);
+    if (!result.ok) {
+      set.status = result.status;
+      return { error: result.error };
+    }
+
     const schedule = await prisma.schedule.update({
       where: { id: params.id },
-      data,
+      data: result.data,
       include: { course: true, lecturer: true, device: true },
     });
     return schedule;
   }, {
     params: t.Object({ id: t.String() }),
     body: t.Object({
-      courseId: t.Optional(t.String()),
-      lecturerId: t.Optional(t.String()),
-      deviceId: t.Optional(t.String()),
+      courseCode: t.Optional(t.String()),
+      course_code: t.Optional(t.String()),
+      lecturerNidn: t.Optional(t.String()),
+      lecturer_nidn: t.Optional(t.String()),
+      deviceCode: t.Optional(t.String()),
+      device_code: t.Optional(t.String()),
       dayOfWeek: t.Optional(t.Number({ minimum: 0, maximum: 6 })),
       startTime: t.Optional(t.String()),
       endTime: t.Optional(t.String()),
@@ -95,17 +170,24 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
   }, {
     params: t.Object({ id: t.String() }),
   })
-  .post("/activate", async ({ body }) => {
+  .post("/activate", async ({ body, set }) => {
+    const deviceCode = body.deviceCode ?? body.device_code;
+    if (!deviceCode) {
+      set.status = 400;
+      return { error: "deviceCode is required" };
+    }
+
     await redis.set(
-      `active_schedule:${body.deviceId}`,
+      `active_schedule:${deviceCode}`,
       body.scheduleId,
       "EX",
       14400
     );
-    return { message: "Schedule activated", deviceId: body.deviceId, scheduleId: body.scheduleId };
+    return { message: "Schedule activated", deviceCode, scheduleId: body.scheduleId };
   }, {
     body: t.Object({
-      deviceId: t.String(),
+      deviceCode: t.Optional(t.String()),
+      device_code: t.Optional(t.String()),
       scheduleId: t.String(),
     }),
   });

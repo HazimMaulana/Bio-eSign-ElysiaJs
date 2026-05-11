@@ -5,31 +5,24 @@ import { jwtPlugin, authGuard } from "../../middleware/auth";
 function mapDepartmentBody(body: {
   code?: string;
   name?: string;
-  facultyId?: string | null;
-  faculty_id?: string | null;
   facultyCode?: string | null;
   faculty_code?: string | null;
 }) {
-  const facultyCode =
-    body.facultyCode ?? body.faculty_code ?? body.facultyId ?? body.faculty_id;
+  const facultyCode = body.facultyCode ?? body.faculty_code;
 
   return {
     ...(body.code !== undefined ? { code: body.code } : {}),
     ...(body.name !== undefined ? { name: body.name } : {}),
     ...(body.facultyCode !== undefined ||
-    body.faculty_code !== undefined ||
-    body.facultyId !== undefined ||
-    body.faculty_id !== undefined
+    body.faculty_code !== undefined
       ? { facultyId: facultyCode ?? null }
       : {}),
   };
 }
 
-async function findDepartmentIdentity(identifier: string) {
-  return await prisma.department.findFirst({
-    where: {
-      OR: [{ id: identifier }, { code: identifier }],
-    },
+async function findDepartmentIdentity(code: string) {
+  return await prisma.department.findUnique({
+    where: { code },
     select: { id: true },
   });
 }
@@ -44,8 +37,6 @@ async function resolveFacultyIdentity(identifier: string) {
 async function buildDepartmentData(body: {
   code?: string;
   name?: string;
-  facultyId?: string | null;
-  faculty_id?: string | null;
   facultyCode?: string | null;
   faculty_code?: string | null;
 }) {
@@ -81,11 +72,9 @@ export const departmentRoutes = new Elysia({ prefix: "/departments" })
     });
     return departments;
   })
-  .get("/:id", async ({ params, set }) => {
-    const department = await prisma.department.findFirst({
-      where: {
-        OR: [{ id: params.id }, { code: params.id }],
-      },
+  .get("/:code", async ({ params, set }) => {
+    const department = await prisma.department.findUnique({
+      where: { code: params.code },
       include: {
         faculty: true,
         courses: { orderBy: { name: "asc" } },
@@ -99,7 +88,7 @@ export const departmentRoutes = new Elysia({ prefix: "/departments" })
     }
     return department;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ code: t.String() }),
   })
   .post("/", async ({ body, set }) => {
     const result = await buildDepartmentData(body);
@@ -122,14 +111,12 @@ export const departmentRoutes = new Elysia({ prefix: "/departments" })
     body: t.Object({
       code: t.String(),
       name: t.String(),
-      facultyId: t.Optional(t.Union([t.String(), t.Null()])),
-      faculty_id: t.Optional(t.Union([t.String(), t.Null()])),
       facultyCode: t.Optional(t.Union([t.String(), t.Null()])),
       faculty_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
-  .put("/:id", async ({ params, body, set }) => {
-    const existing = await findDepartmentIdentity(params.id);
+  .put("/:code", async ({ params, body, set }) => {
+    const existing = await findDepartmentIdentity(params.code);
     if (!existing) {
       set.status = 404;
       return { error: "Department not found" };
@@ -147,18 +134,16 @@ export const departmentRoutes = new Elysia({ prefix: "/departments" })
     });
     return department;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ code: t.String() }),
     body: t.Object({
       code: t.Optional(t.String()),
       name: t.Optional(t.String()),
-      facultyId: t.Optional(t.Union([t.String(), t.Null()])),
-      faculty_id: t.Optional(t.Union([t.String(), t.Null()])),
       facultyCode: t.Optional(t.Union([t.String(), t.Null()])),
       faculty_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
-  .delete("/:id", async ({ params, set }) => {
-    const identity = await findDepartmentIdentity(params.id);
+  .delete("/:code", async ({ params, set }) => {
+    const identity = await findDepartmentIdentity(params.code);
 
     if (!identity) {
       set.status = 404;
@@ -195,5 +180,5 @@ export const departmentRoutes = new Elysia({ prefix: "/departments" })
     await prisma.department.delete({ where: { id: identity.id } });
     return { message: "Department deleted" };
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ code: t.String() }),
   });

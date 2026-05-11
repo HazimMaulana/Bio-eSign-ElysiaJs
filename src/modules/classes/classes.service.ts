@@ -10,6 +10,20 @@ type ClassInput = {
   deviceCode?: string | null;
 };
 
+type StudentTemplateRecord = {
+  id: string;
+  nim: string;
+  name: string;
+  fingerprints: Array<{
+    slot: number;
+    fingerprintIdOnDevice: number | null;
+    templateEnc?: string | null;
+    templateEncBytes?: Uint8Array | Buffer | null;
+    encryptionIv: string;
+    encryptionTag: string;
+  }>;
+};
+
 const DEFAULT_CHUNK_SIZE = Math.max(
   64,
   Number(process.env.MQTT_TEMPLATE_CHUNK_SIZE ?? 512)
@@ -93,11 +107,9 @@ async function validateDeviceCode(deviceCode: string | null | undefined) {
   return device ? null : "Device code not found";
 }
 
-async function findClassIdentity(identifier: string) {
-  return await prisma.class.findFirst({
-    where: {
-      OR: [{ id: identifier }, { code: identifier }],
-    },
+async function findClassIdentity(code: string) {
+  return await prisma.class.findUnique({
+    where: { code },
     select: {
       id: true,
       code: true,
@@ -179,11 +191,9 @@ export async function listAttendanceClasses() {
   });
 }
 
-export async function getAttendanceClass(identifier: string) {
-  return await prisma.class.findFirst({
-    where: {
-      OR: [{ id: identifier }, { code: identifier }],
-    },
+export async function getAttendanceClass(code: string) {
+  return await prisma.class.findUnique({
+    where: { code },
     include: classInclude,
   });
 }
@@ -296,14 +306,12 @@ export async function deleteAttendanceClass(identifier: string) {
 }
 
 export async function syncAttendanceClassToDevice(
-  classIdentifier: string,
+  classCode: string,
   deviceCode?: string,
   options: { chunkSize?: number } = {}
 ) {
-  const classRecord = await prisma.class.findFirst({
-    where: {
-      OR: [{ id: classIdentifier }, { code: classIdentifier }],
-    },
+  const classRecord = await prisma.class.findUnique({
+    where: { code: classCode },
   });
 
   if (!classRecord) {
@@ -413,13 +421,12 @@ export async function syncAttendanceClassToDevice(
 }
 
 export async function changeActiveClassOnDevice(
-  classIdentifier: string,
-  deviceCode?: string
+  classCode: string,
+  deviceCode?: string,
+  studentsOverride?: StudentTemplateRecord[]
 ) {
-  const classRecord = await prisma.class.findFirst({
-    where: {
-      OR: [{ id: classIdentifier }, { code: classIdentifier }],
-    },
+  const classRecord = await prisma.class.findUnique({
+    where: { code: classCode },
   });
 
   if (!classRecord) {
@@ -439,7 +446,8 @@ export async function changeActiveClassOnDevice(
     return { ok: false as const, status: 404, error: "Device code not found" };
   }
 
-  const students = await getStudentsForClassDepartment(classRecord.departmentCode);
+  const students =
+    studentsOverride ?? await getStudentsForClassDepartment(classRecord.departmentCode);
   const chunkSize = DEFAULT_CHUNK_SIZE;
   const sentAt = new Date().toISOString();
   const syncId = `class-${classRecord.code}-${device.deviceId}-${Date.now()}`;

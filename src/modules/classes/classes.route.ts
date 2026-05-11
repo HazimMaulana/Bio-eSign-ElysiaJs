@@ -1,7 +1,6 @@
 import { Elysia, t } from "elysia";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
 import {
-  changeActiveClassOnDevice,
   createAttendanceClass,
   deleteAttendanceClass,
   getAttendanceClass,
@@ -86,8 +85,8 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
       device_code: t.Optional(t.String()),
     }),
   })
-  .get("/:id", async ({ params, set }) => {
-    const attendanceClass = await getAttendanceClass(params.id);
+  .get("/:code", async ({ params, set }) => {
+    const attendanceClass = await getAttendanceClass(params.code);
     if (!attendanceClass) {
       set.status = 404;
       return { error: "Class not found" };
@@ -95,10 +94,10 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
 
     return attendanceClass;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ code: t.String() }),
   })
-  .put("/:id", async ({ params, body, set }) => {
-    const result = await updateAttendanceClass(params.id, mapAttendanceClassBody(body));
+  .put("/:code", async ({ params, body, set }) => {
+    const result = await updateAttendanceClass(params.code, mapAttendanceClassBody(body));
 
     if (!result.ok) {
       set.status = result.status;
@@ -107,7 +106,7 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
 
     return result.attendanceClass;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ code: t.String() }),
     body: t.Object({
       code: t.Optional(t.String()),
       name: t.Optional(t.String()),
@@ -117,8 +116,8 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
       device_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
-  .delete("/:id", async ({ params, set }) => {
-    const result = await deleteAttendanceClass(params.id);
+  .delete("/:code", async ({ params, set }) => {
+    const result = await deleteAttendanceClass(params.code);
 
     if (!result.ok) {
       set.status = result.status;
@@ -127,10 +126,10 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
 
     return result;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ code: t.String() }),
   })
-  .post("/:id/sync-device", async ({ params, body, set }) => {
-    const result = await syncAttendanceClassToDevice(params.id, body.deviceCode ?? body.device_code, {
+  .post("/:code/sync-device", async ({ params, body, set }) => {
+    const result = await syncAttendanceClassToDevice(params.code, body.deviceCode ?? body.device_code, {
       chunkSize: body.chunkSize,
     });
 
@@ -141,26 +140,10 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
 
     return result;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ code: t.String() }),
     body: t.Object({
       deviceCode: t.Optional(t.String()),
       device_code: t.Optional(t.String()),
       chunkSize: t.Optional(t.Number({ minimum: 64 })),
-    }),
-  })
-  .post("/:id/activate-device", async ({ params, body, set }) => {
-    const result = await changeActiveClassOnDevice(params.id, body.deviceCode ?? body.device_code);
-
-    if (!result.ok) {
-      set.status = result.status;
-      return { error: result.error };
-    }
-
-    return result;
-  }, {
-    params: t.Object({ id: t.String() }),
-    body: t.Object({
-      deviceCode: t.Optional(t.String()),
-      device_code: t.Optional(t.String()),
     }),
   });

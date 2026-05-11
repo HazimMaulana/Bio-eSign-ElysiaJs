@@ -3,24 +3,15 @@ import { prisma } from "../../lib/prisma";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
 
 function getDepartmentCode(body: {
-  departmentId?: string | null;
-  department_id?: string | null;
   departmentCode?: string | null;
   department_code?: string | null;
 }) {
-  return (
-    body.departmentCode ??
-    body.department_code ??
-    body.departmentId ??
-    body.department_id
-  );
+  return body.departmentCode ?? body.department_code;
 }
 
-async function findLecturerIdentity(identifier: string) {
-  return await prisma.lecturer.findFirst({
-    where: {
-      OR: [{ id: identifier }, { nidn: identifier }],
-    },
+async function findLecturerIdentity(nidn: string) {
+  return await prisma.lecturer.findUnique({
+    where: { nidn },
     select: { id: true },
   });
 }
@@ -29,8 +20,6 @@ async function buildLecturerData(body: {
   nidn?: string;
   name?: string;
   email?: string;
-  departmentId?: string | null;
-  department_id?: string | null;
   departmentCode?: string | null;
   department_code?: string | null;
 }) {
@@ -47,9 +36,7 @@ async function buildLecturerData(body: {
 
   if (
     body.departmentCode !== undefined ||
-    body.department_code !== undefined ||
-    body.departmentId !== undefined ||
-    body.department_id !== undefined
+    body.department_code !== undefined
   ) {
     const departmentCode = getDepartmentCode(body);
 
@@ -90,11 +77,9 @@ export const lecturerRoutes = new Elysia({ prefix: "/lecturers" })
     });
     return lecturers;
   })
-  .get("/:id", async ({ params, set }) => {
-    const lecturer = await prisma.lecturer.findFirst({
-      where: {
-        OR: [{ id: params.id }, { nidn: params.id }],
-      },
+  .get("/:nidn", async ({ params, set }) => {
+    const lecturer = await prisma.lecturer.findUnique({
+      where: { nidn: params.nidn },
       include: {
         department: { include: { faculty: true } },
         schedules: { include: { course: true, device: true } },
@@ -106,7 +91,7 @@ export const lecturerRoutes = new Elysia({ prefix: "/lecturers" })
     }
     return lecturer;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ nidn: t.String() }),
   })
   .post("/", async ({ body, set }) => {
     const result = await buildLecturerData(body);
@@ -137,14 +122,12 @@ export const lecturerRoutes = new Elysia({ prefix: "/lecturers" })
       nidn: t.String(),
       name: t.String(),
       email: t.String(),
-      departmentId: t.Optional(t.String()),
-      department_id: t.Optional(t.String()),
       departmentCode: t.Optional(t.String()),
       department_code: t.Optional(t.String()),
     }),
   })
-  .put("/:id", async ({ params, body, set }) => {
-    const existing = await findLecturerIdentity(params.id);
+  .put("/:nidn", async ({ params, body, set }) => {
+    const existing = await findLecturerIdentity(params.nidn);
     if (!existing) {
       set.status = 404;
       return { error: "Lecturer not found" };
@@ -162,19 +145,17 @@ export const lecturerRoutes = new Elysia({ prefix: "/lecturers" })
     });
     return lecturer;
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ nidn: t.String() }),
     body: t.Object({
       nidn: t.Optional(t.String()),
       name: t.Optional(t.String()),
       email: t.Optional(t.String()),
-      departmentId: t.Optional(t.String()),
-      department_id: t.Optional(t.String()),
       departmentCode: t.Optional(t.String()),
       department_code: t.Optional(t.String()),
     }),
   })
-  .delete("/:id", async ({ params, set }) => {
-    const identity = await findLecturerIdentity(params.id);
+  .delete("/:nidn", async ({ params, set }) => {
+    const identity = await findLecturerIdentity(params.nidn);
     if (!identity) {
       set.status = 404;
       return { error: "Lecturer not found" };
@@ -198,5 +179,5 @@ export const lecturerRoutes = new Elysia({ prefix: "/lecturers" })
     await prisma.lecturer.delete({ where: { id: identity.id } });
     return { message: "Lecturer deleted" };
   }, {
-    params: t.Object({ id: t.String() }),
+    params: t.Object({ nidn: t.String() }),
   });

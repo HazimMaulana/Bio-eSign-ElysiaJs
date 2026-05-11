@@ -94,6 +94,7 @@ model Student {
   department   Department?          @relation(fields: [departmentId], references: [id])
   fingerprints StudentFingerprint[]
   attendances  AttendanceEvent[]
+  enrollments  CourseEnrollment[]
   createdAt    DateTime             @default(now()) @map("created_at")
   updatedAt    DateTime             @updatedAt @map("updated_at")
 
@@ -156,11 +157,28 @@ model Course {
   name           String
   departmentCode String?     @map("department_code")
   department     Department? @relation(fields: [departmentCode], references: [code], onDelete: SetNull)
+  classCode      String?     @map("class_code")
+  class          Class?      @relation(fields: [classCode], references: [code], onDelete: SetNull)
+  enrollments    CourseEnrollment[]
   schedules      Schedule[]
   createdAt      DateTime    @default(now()) @map("created_at")
 
   @@index([departmentCode])
+  @@index([classCode])
   @@map("courses")
+}
+
+model CourseEnrollment {
+  id        String   @id @default(uuid())
+  courseId  String   @map("course_id")
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  studentId String   @map("student_id")
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([courseId, studentId])
+  @@index([studentId])
+  @@map("course_enrollments")
 }
 
 model Class {
@@ -171,6 +189,7 @@ model Class {
   department     Department? @relation(fields: [departmentCode], references: [code], onDelete: SetNull)
   deviceCode     String?     @map("device_code")
   device         Device?     @relation(fields: [deviceCode], references: [deviceId], onDelete: SetNull)
+  courses        Course[]
   createdAt      DateTime    @default(now()) @map("created_at")
   updatedAt      DateTime    @updatedAt @map("updated_at")
 
