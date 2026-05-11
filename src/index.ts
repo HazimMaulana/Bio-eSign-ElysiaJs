@@ -27,7 +27,7 @@ const app = new Elysia()
   .group("/api", (app) =>
     app
       // ─── Auth ─────────────────────────────────────────
-      .post("/auth/login", async ({ jwt, body, set }) => {
+      .post("/auth/sessions", async ({ jwt, body, set }) => {
         const user = await prisma.user.findUnique({
           where: { username: body.username },
         });

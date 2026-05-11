@@ -170,8 +170,18 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
   }, {
     params: t.Object({ id: t.String() }),
   })
-  .post("/activate", async ({ body, set }) => {
-    const deviceCode = body.deviceCode ?? body.device_code;
+  .post("/:id/activations", async ({ params, body, set }) => {
+    const schedule = await prisma.schedule.findUnique({
+      where: { id: params.id },
+      include: { device: true },
+    });
+
+    if (!schedule) {
+      set.status = 404;
+      return { error: "Schedule not found" };
+    }
+
+    const deviceCode = body.deviceCode ?? body.device_code ?? schedule.device?.deviceId;
     if (!deviceCode) {
       set.status = 400;
       return { error: "deviceCode is required" };
@@ -179,15 +189,16 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
 
     await redis.set(
       `active_schedule:${deviceCode}`,
-      body.scheduleId,
+      params.id,
       "EX",
       14400
     );
-    return { message: "Schedule activated", deviceCode, scheduleId: body.scheduleId };
+    set.status = 201;
+    return { message: "Schedule activation created", deviceCode, scheduleId: params.id };
   }, {
+    params: t.Object({ id: t.String() }),
     body: t.Object({
       deviceCode: t.Optional(t.String()),
       device_code: t.Optional(t.String()),
-      scheduleId: t.String(),
     }),
   });

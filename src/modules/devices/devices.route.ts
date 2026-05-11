@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { prisma } from "../../lib/prisma";
 import { redis } from "../../lib/redis";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
+import { setDeviceStandby } from "../classes/classes.service";
 
 function mapDeviceBody(body: {
   deviceId?: string;
@@ -39,7 +40,23 @@ async function findDeviceIdentity(deviceId: string) {
 export const deviceRoutes = new Elysia({ prefix: "/devices" })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
-  .get("/", async () => {
+  .get("/", async ({ query }) => {
+    if (query.online) {
+      const keys = await redis.keys("device:*:status");
+      const onlineDeviceIds = keys.map((key) => key.split(":")[1]);
+      return await prisma.device.findMany({
+        where: { deviceId: { in: onlineDeviceIds } },
+        orderBy: { createdAt: "desc" },
+        include: {
+          classes: {
+            include: {
+              department: true,
+            },
+          },
+        },
+      });
+    }
+
     return await prisma.device.findMany({
       orderBy: { createdAt: "desc" },
       include: {
@@ -50,15 +67,10 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
         },
       },
     });
-  })
-  .get("/online", async () => {
-    const keys = await redis.keys("device:*:status");
-    const onlineDeviceIds: string[] = [];
-    for (const key of keys) {
-      const deviceId = key.split(":")[1];
-      onlineDeviceIds.push(deviceId);
-    }
-    return { online: onlineDeviceIds, count: onlineDeviceIds.length };
+  }, {
+    query: t.Object({
+      online: t.Optional(t.Boolean()),
+    }),
   })
   .get("/:deviceCode", async ({ params, set }) => {
     const device = await prisma.device.findUnique({
@@ -145,6 +157,30 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
       ),
       firmwareVersion: t.Optional(t.Union([t.String(), t.Null()])),
       firmware_version: t.Optional(t.Union([t.String(), t.Null()])),
+    }),
+  })
+  .post("/:deviceCode/commands", async ({ params, body, set }) => {
+    if (body.type !== "STANDBY") {
+      set.status = 400;
+      return { error: "Unsupported command type" };
+    }
+
+    const result = await setDeviceStandby(params.deviceCode);
+
+    if (!result.ok) {
+      set.status = result.status;
+      return { error: result.error };
+    }
+
+    set.status = 201;
+    return {
+      ...result,
+      type: body.type,
+    };
+  }, {
+    params: t.Object({ deviceCode: t.String() }),
+    body: t.Object({
+      type: t.Literal("STANDBY"),
     }),
   })
   .delete("/:deviceCode", async ({ params, set }) => {

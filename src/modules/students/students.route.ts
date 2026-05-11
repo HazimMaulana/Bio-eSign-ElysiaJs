@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { prisma } from "../../lib/prisma";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
 import { decryptTemplateBytes } from "../../lib/crypto";
+import { storeRegistrationTemplateFromBinary } from "../registration/registration.service";
 
 function getDepartmentCode(body: {
   departmentCode?: string | null;
@@ -15,6 +16,23 @@ async function findStudentIdentity(nim: string) {
     where: { nim },
     select: { id: true },
   });
+}
+
+function formValueToString(value: unknown) {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  return "";
+}
+
+function formValueToOptionalNumber(value: unknown) {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() !== ""
+        ? Number(value)
+        : NaN;
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 async function buildStudentData(body: {
@@ -139,6 +157,50 @@ export const studentRoutes = new Elysia({ prefix: "/students" })
       nim: t.String(),
       slot: t.Numeric(),
     }),
+  })
+  .put("/:nim/fingerprints/:slot/template", async ({ params, body, set }) => {
+    const form = body as Record<string, unknown>;
+    const template = form.template;
+
+    if (!(template instanceof File)) {
+      set.status = 400;
+      return { error: "template file is required" };
+    }
+
+    const student = await prisma.student.findUnique({
+      where: { nim: params.nim },
+      select: { name: true },
+    });
+
+    if (!student) {
+      set.status = 404;
+      return { error: "Student not found" };
+    }
+
+    const result = await storeRegistrationTemplateFromBinary({
+      nim: params.nim,
+      name: formValueToString(form.name ?? form.nama) || student.name,
+      slot: params.slot,
+      fingerprintId: formValueToOptionalNumber(
+        form.fingerprintId ?? form.fingerprint_id ?? form.finger_id
+      ),
+      templateBytes: await template.arrayBuffer(),
+      deviceId: formValueToString(form.deviceId ?? form.device_id),
+      classCode: formValueToString(form.classCode ?? form.class_code),
+    });
+
+    if (!result.ok) {
+      set.status = result.status;
+      return { error: result.error };
+    }
+
+    return result;
+  }, {
+    params: t.Object({
+      nim: t.String(),
+      slot: t.Numeric(),
+    }),
+    parse: "multipart/form-data",
   })
   .post("/", async ({ body, set }) => {
     const result = await buildStudentData(body);

@@ -114,12 +114,12 @@ Response:
 
 ## 3. Autentikasi (Login)
 
-Semua endpoint `/api/*` (kecuali login) membutuhkan JWT token.
+Semua endpoint `/api/*` (kecuali pembuatan session) membutuhkan JWT token.
 
-### `POST /api/auth/login`
+### `POST /api/auth/sessions`
 
 ```bash
-curl -X POST http://localhost:3000/api/auth/login \
+curl -X POST http://localhost:3000/api/auth/sessions \
   -H "Content-Type: application/json" \
   -d '{"username": "admin", "password": "admin123"}'
 ```
@@ -310,10 +310,10 @@ Log server:
 
 Untuk pencatatan manual oleh admin melalui dashboard.
 
-#### `POST /api/attendance/record`
+#### `POST /api/attendance-events`
 
 ```bash
-curl -X POST http://localhost:3000/api/attendance/record \
+curl -X POST http://localhost:3000/api/attendance-events \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{
@@ -337,12 +337,12 @@ Response:
 }
 ```
 
-#### `GET /api/attendance/history`
+#### `GET /api/attendance-events`
 
 Mengambil 10 record attendance terbaru beserta data student dan device.
 
 ```bash
-curl http://localhost:3000/api/attendance/history \
+curl http://localhost:3000/api/attendance-events?limit=10 \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -380,22 +380,24 @@ curl http://localhost:3000/api/devices/ \
   -H "Authorization: Bearer <token>"
 ```
 
-### `GET /api/devices/online`
+### `GET /api/devices?online=true`
 
 Cek device yang sedang online (berdasarkan cache Redis dari MQTT ping):
 
 ```bash
-curl http://localhost:3000/api/devices/online \
+curl "http://localhost:3000/api/devices?online=true" \
   -H "Authorization: Bearer <token>"
 ```
 
 Response:
 
 ```json
-{
-  "online": ["ESP32_LAB_01", "ESP32_LAB_02"],
-  "count": 2
-}
+[
+  {
+    "deviceId": "ESP32_LAB_01",
+    "status": "ONLINE"
+  }
+]
 ```
 
 ### Device Auto-Register via MQTT Ping
@@ -422,17 +424,16 @@ Jika `MQTT_DEBUG="true"`, Anda juga akan melihat log seperti:
 
 ## 8. Manajemen Schedule
 
-### `POST /api/schedules/activate`
+### `POST /api/schedules/:id/activations`
 
 Aktifkan jadwal pada device tertentu. Data di-cache ke Redis selama 4 jam agar setiap attendance dari device tersebut otomatis terhubung ke schedule.
 
 ```bash
-curl -X POST http://localhost:3000/api/schedules/activate \
+curl -X POST http://localhost:3000/api/schedules/<schedule_uuid>/activations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{
-    "deviceId": "ESP32_LAB_01",
-    "scheduleId": "<schedule_uuid>"
+    "deviceId": "ESP32_LAB_01"
   }'
 ```
 
@@ -440,7 +441,7 @@ Response:
 
 ```json
 {
-  "message": "Schedule activated",
+  "message": "Schedule activation created",
   "deviceId": "ESP32_LAB_01",
   "scheduleId": "<schedule_uuid>"
 }
@@ -477,11 +478,11 @@ Response:
 ┌─────────────────────────────────────────────────────────────┐
 │                 OPERASIONAL (Harian)                         │
 ├─────────────────────────────────────────────────────────────┤
-│ 1. POST /api/auth/login → dapat token                       │
-│ 2. POST /api/schedules/activate → aktifkan jadwal           │
+│ 1. POST /api/auth/sessions → dapat token                    │
+│ 2. POST /api/schedules/:id/activations → aktifkan jadwal    │
 │ 3. ESP32 mengirim ping (auto-register, status ONLINE)       │
 │ 4. Mahasiswa tapping → ESP32 publish attendance via MQTT    │
 │ 5. Server: lookup fingerprint → cek schedule → simpan       │
-│ 6. GET /api/attendance/history → lihat data kehadiran       │
+│ 6. GET /api/attendance-events → lihat data kehadiran        │
 └─────────────────────────────────────────────────────────────┘
 ```

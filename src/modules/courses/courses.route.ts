@@ -589,7 +589,7 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
   }, {
     params: t.Object({ code: t.String() }),
   })
-  .post("/:code/activate", async ({ params, set }) => {
+  .post("/:code/activations", async ({ params, set }) => {
     const result = await activateCourseDevice(params.code);
 
     if (!result.ok) {
@@ -597,6 +597,7 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
       return { error: result.error };
     }
 
+    set.status = 201;
     return result;
   }, {
     params: t.Object({ code: t.String() }),

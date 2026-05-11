@@ -5,7 +5,6 @@ import {
   deleteAttendanceClass,
   getAttendanceClass,
   listAttendanceClasses,
-  setDeviceStandby,
   syncAttendanceClassToDevice,
   updateAttendanceClass,
 } from "./classes.service";
@@ -64,27 +63,6 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
       device_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
-  .post("/standby-device", async ({ body, set }) => {
-    const deviceCode = body.deviceCode ?? body.device_code;
-    if (!deviceCode) {
-      set.status = 400;
-      return { error: "device_code is required" };
-    }
-
-    const result = await setDeviceStandby(deviceCode);
-
-    if (!result.ok) {
-      set.status = result.status;
-      return { error: result.error };
-    }
-
-    return result;
-  }, {
-    body: t.Object({
-      deviceCode: t.Optional(t.String()),
-      device_code: t.Optional(t.String()),
-    }),
-  })
   .get("/:code", async ({ params, set }) => {
     const attendanceClass = await getAttendanceClass(params.code);
     if (!attendanceClass) {
@@ -128,7 +106,7 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
   }, {
     params: t.Object({ code: t.String() }),
   })
-  .post("/:code/sync-device", async ({ params, body, set }) => {
+  .post("/:code/device-synchronizations", async ({ params, body, set }) => {
     const result = await syncAttendanceClassToDevice(params.code, body.deviceCode ?? body.device_code, {
       chunkSize: body.chunkSize,
     });
@@ -138,6 +116,7 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
       return { error: result.error };
     }
 
+    set.status = 201;
     return result;
   }, {
     params: t.Object({ code: t.String() }),

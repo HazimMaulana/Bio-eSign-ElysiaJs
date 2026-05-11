@@ -2,17 +2,21 @@ import { Elysia, t } from "elysia";
 import { prisma } from "../../lib/prisma";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
 
-export const attendanceRoutes = new Elysia({ prefix: "/attendance" })
+export const attendanceRoutes = new Elysia({ prefix: "/attendance-events" })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
-  .get("/history", async () => {
+  .get("/", async ({ query }) => {
     return await prisma.attendanceEvent.findMany({
-      take: 10,
+      take: query.limit ?? 10,
       orderBy: { eventTime: "desc" },
       include: { student: true, device: true },
     });
+  }, {
+    query: t.Object({
+      limit: t.Optional(t.Number({ minimum: 1, maximum: 1000, default: 10 })),
+    }),
   })
-  .post("/record", async ({ body, set }) => {
+  .post("/", async ({ body, set }) => {
     const event = await prisma.attendanceEvent.create({
       data: {
         studentId: body.studentId,
