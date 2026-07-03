@@ -39,6 +39,20 @@ enum UserRole {
   STUDENT
 }
 
+enum AttendanceSessionStatus {
+  OPEN
+  CLOSED
+  CANCELLED
+}
+
+enum AttendanceRecordStatus {
+  PRESENT
+  LATE
+  EXCUSED
+  ABSENT
+  REJECTED
+}
+
 // ─── Dashboard User (Auth & RBAC) ───────────────────────
 
 model User {
@@ -67,16 +81,16 @@ model Faculty {
 }
 
 model Department {
-  id        String            @id @default(uuid())
-  code      String            @unique // e.g., 'IF', 'SI'
+  id        String     @id @default(uuid())
+  code      String     @unique // e.g., 'IF', 'SI'
   name      String
-  facultyId String?           @map("faculty_id")
-  faculty   Faculty?          @relation(fields: [facultyId], references: [id], onDelete: SetNull)
+  facultyId String?    @map("faculty_id")
+  faculty   Faculty?   @relation(fields: [facultyId], references: [id], onDelete: SetNull)
   students  Student[]
   lecturers Lecturer[]
   courses   Course[]
   classes   Class[]
-  createdAt DateTime          @default(now()) @map("created_at")
+  createdAt DateTime   @default(now()) @map("created_at")
 
   @@index([facultyId])
   @@map("departments")
@@ -85,18 +99,19 @@ model Department {
 // ─── Student Identity ───────────────────────────────────
 
 model Student {
-  id           String               @id @default(uuid())
-  nim          String               @unique
-  name         String
-  email        String?              @unique
-  isActive     Boolean              @default(true) @map("is_active")
-  departmentId String?              @map("department_id")
-  department   Department?          @relation(fields: [departmentId], references: [id])
-  fingerprints StudentFingerprint[]
-  attendances  AttendanceEvent[]
-  enrollments  CourseEnrollment[]
-  createdAt    DateTime             @default(now()) @map("created_at")
-  updatedAt    DateTime             @updatedAt @map("updated_at")
+  id                String               @id @default(uuid())
+  nim               String               @unique
+  name              String
+  email             String?              @unique
+  isActive          Boolean              @default(true) @map("is_active")
+  departmentId      String?              @map("department_id")
+  department        Department?          @relation(fields: [departmentId], references: [id])
+  fingerprints      StudentFingerprint[]
+  attendances       AttendanceEvent[]
+  attendanceRecords AttendanceRecord[]
+  enrollments       CourseEnrollment[]
+  createdAt         DateTime             @default(now()) @map("created_at")
+  updatedAt         DateTime             @updatedAt @map("updated_at")
 
   @@map("students")
 }
@@ -129,6 +144,7 @@ model Device {
   lastPing        DateTime?         @map("last_ping")
   firmwareVersion String?           @map("firmware_version")
   classes         Class[]
+  courseClasses   CourseClass[]
   attendances     AttendanceEvent[]
   schedules       Schedule[]
   createdAt       DateTime          @default(now()) @map("created_at")
@@ -139,29 +155,33 @@ model Device {
 // ─── Academic Logic ─────────────────────────────────────
 
 model Lecturer {
-  id                String            @id @default(uuid())
-  nidn              String            @unique // National Lecturer ID
-  name              String
-  email             String            @unique
-  departmentId      String            @map("department_id")
-  department        Department        @relation(fields: [departmentId], references: [id])
-  schedules         Schedule[]
-  createdAt         DateTime          @default(now()) @map("created_at")
+  id             String              @id @default(uuid())
+  nidn           String              @unique // National Lecturer ID
+  name           String
+  email          String              @unique
+  departmentId   String              @map("department_id")
+  department     Department          @relation(fields: [departmentId], references: [id])
+  schedules      Schedule[]
+  courseClasses  CourseClass[]
+  openedSessions AttendanceSession[]
+  createdAt      DateTime            @default(now()) @map("created_at")
 
   @@map("lecturers")
 }
 
 model Course {
-  id             String      @id @default(uuid())
-  code           String      @unique
+  id             String             @id @default(uuid())
+  code           String             @unique
   name           String
-  departmentCode String?     @map("department_code")
-  department     Department? @relation(fields: [departmentCode], references: [code], onDelete: SetNull)
-  classCode      String?     @map("class_code")
-  class          Class?      @relation(fields: [classCode], references: [code], onDelete: SetNull)
+  credits        Int?
+  departmentCode String?            @map("department_code")
+  department     Department?        @relation(fields: [departmentCode], references: [code], onDelete: SetNull)
+  classCode      String?            @map("class_code")
+  class          Class?             @relation(fields: [classCode], references: [code], onDelete: SetNull)
+  courseClasses  CourseClass[]
   enrollments    CourseEnrollment[]
   schedules      Schedule[]
-  createdAt      DateTime    @default(now()) @map("created_at")
+  createdAt      DateTime           @default(now()) @map("created_at")
 
   @@index([departmentCode])
   @@index([classCode])
@@ -169,16 +189,65 @@ model Course {
 }
 
 model CourseEnrollment {
-  id        String   @id @default(uuid())
-  courseId  String   @map("course_id")
-  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  studentId String   @map("student_id")
-  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now()) @map("created_at")
+  id            String       @id @default(uuid())
+  courseId      String       @map("course_id")
+  course        Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  courseClassId String?      @map("course_class_id")
+  courseClass   CourseClass? @relation(fields: [courseClassId], references: [id], onDelete: Cascade)
+  studentId     String       @map("student_id")
+  student       Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  status        String       @default("ACTIVE")
+  grade         String?
+  createdAt     DateTime     @default(now()) @map("created_at")
 
-  @@unique([courseId, studentId])
+  @@unique([courseClassId, studentId])
+  @@index([courseId])
   @@index([studentId])
+  @@index([courseClassId])
   @@map("course_enrollments")
+}
+
+model Semester {
+  id            String        @id @default(uuid())
+  code          String        @unique
+  name          String
+  academicYear  String?       @map("academic_year")
+  startsAt      DateTime?     @map("starts_at")
+  endsAt        DateTime?     @map("ends_at")
+  courseClasses CourseClass[]
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  @@map("semesters")
+}
+
+model CourseClass {
+  id          String              @id @default(uuid())
+  code        String              @unique
+  name        String
+  courseId    String              @map("course_id")
+  course      Course              @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lecturerId  String?             @map("lecturer_id")
+  lecturer    Lecturer?           @relation(fields: [lecturerId], references: [id], onDelete: SetNull)
+  semesterId  String?             @map("semester_id")
+  semester    Semester?           @relation(fields: [semesterId], references: [id], onDelete: SetNull)
+  deviceCode  String?             @map("device_code")
+  device      Device?             @relation(fields: [deviceCode], references: [deviceId], onDelete: SetNull)
+  dayOfWeek   Int?                @map("day_of_week")
+  startTime   DateTime?           @map("start_time")
+  endTime     DateTime?           @map("end_time")
+  roomName    String?             @map("room_name")
+  capacity    Int?
+  enrollments CourseEnrollment[]
+  sessions    AttendanceSession[]
+  createdAt   DateTime            @default(now()) @map("created_at")
+  updatedAt   DateTime            @updatedAt @map("updated_at")
+
+  @@index([courseId])
+  @@index([lecturerId])
+  @@index([semesterId])
+  @@index([deviceCode])
+  @@map("course_classes")
 }
 
 model Class {
@@ -219,24 +288,95 @@ model Schedule {
 // ─── Attendance Events (High Traffic) ───────────────────
 
 model AttendanceEvent {
-  id         BigInt           @id @default(autoincrement())
-  studentId  String?          @map("student_id")
-  student    Student?         @relation(fields: [studentId], references: [id])
-  deviceId   String           @map("device_id")
-  device     Device           @relation(fields: [deviceId], references: [id])
-  scheduleId String?          @map("schedule_id")
-  schedule   Schedule?        @relation(fields: [scheduleId], references: [id])
+  id         BigInt             @id @default(autoincrement())
+  studentId  String?            @map("student_id")
+  student    Student?           @relation(fields: [studentId], references: [id])
+  deviceId   String             @map("device_id")
+  device     Device             @relation(fields: [deviceId], references: [id])
+  scheduleId String?            @map("schedule_id")
+  schedule   Schedule?          @relation(fields: [scheduleId], references: [id])
+  sessionId  String?            @map("session_id")
+  session    AttendanceSession? @relation(fields: [sessionId], references: [id])
   action     AttendanceAction
-  matchScore Int?             @map("match_score")
-  eventTime  DateTime         @default(now()) @map("event_time")
-  rawPayload Json?            @map("raw_payload") // Full MQTT payload for audit
+  matchScore Int?               @map("match_score")
+  eventTime  DateTime           @default(now()) @map("event_time")
+  rawPayload Json?              @map("raw_payload") // Full MQTT payload for audit
 
   @@index([studentId, eventTime])
+  @@index([sessionId])
   @@index([eventTime])
   @@map("attendance_events")
 }
 
+model AttendanceSession {
+  id                 String                  @id @default(uuid())
+  courseClassId      String                  @map("course_class_id")
+  courseClass        CourseClass             @relation(fields: [courseClassId], references: [id], onDelete: Cascade)
+  openedByLecturerId String?                 @map("opened_by_lecturer_id")
+  openedByLecturer   Lecturer?               @relation(fields: [openedByLecturerId], references: [id], onDelete: SetNull)
+  meetingNumber      Int?                    @map("meeting_number")
+  openedAt           DateTime                @default(now()) @map("opened_at")
+  closedAt           DateTime?               @map("closed_at")
+  status             AttendanceSessionStatus @default(OPEN)
+  records            AttendanceRecord[]
+  events             AttendanceEvent[]
+
+  @@index([courseClassId, status])
+  @@index([openedAt])
+  @@map("attendance_sessions")
+}
+
+model AttendanceRecord {
+  id                  String                 @id @default(uuid())
+  attendanceSessionId String                 @map("attendance_session_id")
+  attendanceSession   AttendanceSession      @relation(fields: [attendanceSessionId], references: [id], onDelete: Cascade)
+  studentId           String                 @map("student_id")
+  student             Student                @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  checkedAt           DateTime               @default(now()) @map("checked_at")
+  status              AttendanceRecordStatus @default(PRESENT)
+  source              String                 @default("BIOMETRIC")
+  matchScore          Int?                   @map("match_score")
+  rawPayload          Json?                  @map("raw_payload")
+
+  @@unique([attendanceSessionId, studentId])
+  @@index([studentId, checkedAt])
+  @@map("attendance_records")
+}
+
 // ─── Security Audit Log ─────────────────────────────────
+
+// Clone of university SIA schedule data for audit-friendly sync history.
+model SiaScheduleClone {
+  id               String   @id @default(uuid())
+  sourceScheduleId String   @unique @map("source_schedule_id")
+  departmentId     String?  @map("department_id")
+  departmentCode   String   @map("department_code")
+  departmentName   String   @map("department_name")
+  classId          String?  @map("class_id")
+  classCode        String   @map("class_code")
+  className        String   @map("class_name")
+  courseId         String   @map("course_id")
+  courseName       String   @map("course_name")
+  lecturerId       String   @map("lecturer_id")
+  lecturerName     String   @map("lecturer_name")
+  scheduledDate    DateTime @map("scheduled_date")
+  startsAt         DateTime @map("starts_at")
+  endsAt           DateTime @map("ends_at")
+  roomName         String?  @map("room_name")
+  syncBatchId      String   @map("sync_batch_id")
+  lastSyncStatus   String   @default("SYNCED") @map("last_sync_status")
+  rawPayload       Json     @map("raw_payload")
+  lastSyncedAt     DateTime @default(now()) @map("last_synced_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@index([scheduledDate])
+  @@index([departmentCode])
+  @@index([classCode])
+  @@index([courseId])
+  @@index([lecturerId])
+  @@map("sia_schedule_clones")
+}
 
 model SecurityAuditLog {
   id          BigInt   @id @default(autoincrement())

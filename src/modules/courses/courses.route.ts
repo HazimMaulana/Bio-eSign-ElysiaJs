@@ -6,21 +6,19 @@ import { changeActiveClassOnDevice } from "../classes/classes.service";
 function mapCourseBody(body: {
   code?: string;
   name?: string;
-  departmentCode?: string | null;
+  credits?: number | null;
   department_code?: string | null;
-  classCode?: string | null;
   class_code?: string | null;
 }) {
   return {
     ...(body.code !== undefined ? { code: body.code } : {}),
     ...(body.name !== undefined ? { name: body.name } : {}),
-    ...(body.departmentCode !== undefined ||
-    body.department_code !== undefined
-      ? { departmentCode: body.departmentCode ?? body.department_code ?? null }
+    ...(body.credits !== undefined ? { credits: body.credits ?? null } : {}),
+    ...(body.department_code !== undefined
+      ? { departmentCode: body.department_code ?? null }
       : {}),
-    ...(body.classCode !== undefined ||
-    body.class_code !== undefined
-      ? { classCode: body.classCode ?? body.class_code ?? null }
+    ...(body.class_code !== undefined
+      ? { classCode: body.class_code ?? null }
       : {}),
   };
 }
@@ -28,22 +26,18 @@ function mapCourseBody(body: {
 function getCourseStudentNims(body: {
   nim?: string;
   nims?: string[];
-  studentNims?: string[];
   student_nims?: string[];
 }) {
   return [
     ...(body.nim !== undefined ? [body.nim] : []),
     ...(body.nims ?? []),
-    ...(body.studentNims ?? []),
     ...(body.student_nims ?? []),
   ];
 }
 
 function getOptionalCourseStudentNims(body: {
-  studentNims?: string[];
   student_nims?: string[];
 }) {
-  if (body.studentNims !== undefined) return body.studentNims;
   if (body.student_nims !== undefined) return body.student_nims;
   return undefined;
 }
@@ -150,7 +144,7 @@ async function validateCourseStudentNims(studentNims: string[] | undefined) {
     return {
       ok: false as const,
       status: 400,
-      error: "studentNims must not contain empty values",
+      error: "student_nims must not contain empty values",
     };
   }
 
@@ -236,16 +230,16 @@ async function activateCourseDevice(code: string) {
       id: course.id,
       code: course.code,
       name: course.name,
-      classCode: course.class.code,
-      className: course.class.name,
-      deviceCode: course.class.deviceCode,
-      studentNims: course.enrollments.map((enrollment) => enrollment.student.nim),
+      class_code: course.class.code,
+      class_name: course.class.name,
+      device_code: course.class.deviceCode,
+      student_nims: course.enrollments.map((enrollment) => enrollment.student.nim),
     },
     activation,
   };
 }
 
-export const courseRoutes = new Elysia({ prefix: "/courses" })
+export const courseRoutes = new Elysia({ prefix: "/courses", tags: ["Courses"] })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
   .get("/", async () => {
@@ -254,6 +248,10 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
       include: {
         department: { include: { faculty: true } },
         class: { include: { device: true } },
+        courseClasses: {
+          include: { lecturer: true, semester: true, device: true },
+          orderBy: { createdAt: "desc" },
+        },
         enrollments: {
           include: { student: true },
           orderBy: { createdAt: "asc" },
@@ -284,7 +282,7 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
     const studentNims = getCourseStudentNims(body);
     if (studentNims.length === 0) {
       set.status = 400;
-      return { error: "nim or studentNims is required" };
+      return { error: "nim or student_nims is required" };
     }
 
     const enrollmentResult = await validateCourseStudentNims(studentNims);
@@ -312,7 +310,6 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
     body: t.Object({
       nim: t.Optional(t.String()),
       nims: t.Optional(t.Array(t.String())),
-      studentNims: t.Optional(t.Array(t.String())),
       student_nims: t.Optional(t.Array(t.String())),
     }),
   })
@@ -326,11 +323,10 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
     const hasEnrollmentInput =
       body.nim !== undefined ||
       body.nims !== undefined ||
-      body.studentNims !== undefined ||
       body.student_nims !== undefined;
     if (!hasEnrollmentInput) {
       set.status = 400;
-      return { error: "nim or studentNims is required" };
+      return { error: "nim or student_nims is required" };
     }
 
     const enrollmentResult = await validateCourseStudentNims(getCourseStudentNims(body));
@@ -365,7 +361,6 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
     body: t.Object({
       nim: t.Optional(t.String()),
       nims: t.Optional(t.Array(t.String())),
-      studentNims: t.Optional(t.Array(t.String())),
       student_nims: t.Optional(t.Array(t.String())),
     }),
   })
@@ -405,6 +400,10 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
       include: {
         department: { include: { faculty: true } },
         class: { include: { device: true } },
+        courseClasses: {
+          include: { lecturer: true, semester: true, device: true },
+          orderBy: { createdAt: "desc" },
+        },
         enrollments: {
           include: {
             student: {
@@ -470,6 +469,10 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
         include: {
           department: { include: { faculty: true } },
           class: { include: { device: true } },
+          courseClasses: {
+            include: { lecturer: true, semester: true, device: true },
+            orderBy: { createdAt: "desc" },
+          },
           enrollments: {
             include: { student: true },
             orderBy: { createdAt: "asc" },
@@ -483,11 +486,9 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
     body: t.Object({
       code: t.String(),
       name: t.String(),
-      departmentCode: t.Optional(t.Union([t.String(), t.Null()])),
+      credits: t.Optional(t.Union([t.Number({ minimum: 0 }), t.Null()])),
       department_code: t.Optional(t.Union([t.String(), t.Null()])),
-      classCode: t.Optional(t.Union([t.String(), t.Null()])),
       class_code: t.Optional(t.Union([t.String(), t.Null()])),
-      studentNims: t.Optional(t.Array(t.String())),
       student_nims: t.Optional(t.Array(t.String())),
     }),
   })
@@ -540,6 +541,10 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
         include: {
           department: { include: { faculty: true } },
           class: { include: { device: true } },
+          courseClasses: {
+            include: { lecturer: true, semester: true, device: true },
+            orderBy: { createdAt: "desc" },
+          },
           enrollments: {
             include: { student: true },
             orderBy: { createdAt: "asc" },
@@ -553,11 +558,9 @@ export const courseRoutes = new Elysia({ prefix: "/courses" })
     body: t.Object({
       code: t.Optional(t.String()),
       name: t.Optional(t.String()),
-      departmentCode: t.Optional(t.Union([t.String(), t.Null()])),
+      credits: t.Optional(t.Union([t.Number({ minimum: 0 }), t.Null()])),
       department_code: t.Optional(t.Union([t.String(), t.Null()])),
-      classCode: t.Optional(t.Union([t.String(), t.Null()])),
       class_code: t.Optional(t.Union([t.String(), t.Null()])),
-      studentNims: t.Optional(t.Array(t.String())),
       student_nims: t.Optional(t.Array(t.String())),
     }),
   })

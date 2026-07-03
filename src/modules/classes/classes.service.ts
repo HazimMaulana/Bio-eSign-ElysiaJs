@@ -1,6 +1,6 @@
 import { prisma } from "../../lib/prisma";
 import { decryptTemplate, decryptTemplateBytes } from "../../lib/crypto";
-import { getMqttServerTopic, publishMqtt, publishMqttBinary } from "../../lib/mqtt";
+import { getMqttDeviceTopic, publishMqtt, publishMqttBinary } from "../../lib/mqtt";
 import { redis } from "../../lib/redis";
 
 type ClassInput = {
@@ -8,6 +8,11 @@ type ClassInput = {
   name?: string;
   departmentCode?: string | null;
   deviceCode?: string | null;
+};
+
+type ClassListFilter = {
+  departmentCode?: string;
+  facultyCode?: string;
 };
 
 type StudentTemplateRecord = {
@@ -24,16 +29,18 @@ type StudentTemplateRecord = {
   }>;
 };
 
+type ActiveClassSyncInput = {
+  classCode: string;
+  className: string;
+  departmentCode?: string | null;
+  deviceCode: string;
+  students: StudentTemplateRecord[];
+};
+
 const DEFAULT_CHUNK_SIZE = Math.max(
   64,
   Number(process.env.MQTT_TEMPLATE_CHUNK_SIZE ?? 512)
 );
-const DEVICE_TOPIC_PREFIX = process.env.MQTT_DEVICE_TOPIC_PREFIX ?? "presence";
-const DEVICE_TOPICS = {
-  catalog: `${DEVICE_TOPIC_PREFIX}/mahasiswa/catalog`,
-  templateManifest: `${DEVICE_TOPIC_PREFIX}/mahasiswa/templates/manifest`,
-  templateChunk: `${DEVICE_TOPIC_PREFIX}/mahasiswa/templates/chunk`,
-} as const;
 const DEFAULT_ACTIVE_CLASS_CODE = process.env.MQTT_DEFAULT_CLASS_CODE ?? "A";
 const activeClassByDevice = new Map<string, string>();
 
@@ -153,8 +160,62 @@ async function getFingerprintTemplateBytes(fingerprint: {
   return null;
 }
 
-function getKampusCommandTopic(deviceCode: string) {
-  return `${DEVICE_TOPIC_PREFIX}/device/${deviceCode}/command`;
+function getDeviceCommandTopic(deviceCode: string) {
+  return getMqttDeviceTopic(deviceCode, "command");
+}
+
+function getDeviceConfigTopic(deviceCode: string) {
+  return getMqttDeviceTopic(deviceCode, "config");
+}
+
+function getDeviceCatalogTopic(deviceCode: string) {
+  return getMqttDeviceTopic(deviceCode, "catalog");
+}
+
+function getDeviceTemplateManifestTopic(deviceCode: string) {
+  return getMqttDeviceTopic(deviceCode, "template/manifest");
+}
+
+function getDeviceTemplateChunkTopic(deviceCode: string) {
+  return getMqttDeviceTopic(deviceCode, "template/chunk");
+}
+
+function getDeviceAttendanceTopic(deviceCode: string) {
+  return getMqttDeviceTopic(deviceCode, "attendance");
+}
+
+function getDeviceStatusTopic(deviceCode: string) {
+  return getMqttDeviceTopic(deviceCode, "status");
+}
+
+async function publishDeviceClassConfig(device: { deviceId: string }, classRecord: {
+  code: string;
+  name: string;
+  departmentCode: string | null;
+}) {
+  const sentAt = new Date().toISOString();
+  const topic = getDeviceConfigTopic(device.deviceId);
+  const payload = {
+    device_id: device.deviceId,
+    assigned: true,
+    class_code: classRecord.code,
+    class_name: classRecord.name,
+    department_code: classRecord.departmentCode,
+    topics: {
+      config: topic,
+      command: getDeviceCommandTopic(device.deviceId),
+      catalog: getDeviceCatalogTopic(device.deviceId),
+      template_manifest: getDeviceTemplateManifestTopic(device.deviceId),
+      template_chunk: getDeviceTemplateChunkTopic(device.deviceId),
+      attendance: getDeviceAttendanceTopic(device.deviceId),
+      status: getDeviceStatusTopic(device.deviceId),
+    },
+    sent_at: sentAt,
+  };
+
+  await publishMqtt(topic, payload);
+
+  return { topic, payload };
 }
 
 async function resolveActiveClassCodeForDevice(
@@ -185,10 +246,58 @@ async function getStudentsForClassDepartment(departmentCode: string | null) {
 }
 
 export async function listAttendanceClasses() {
+  return await listAttendanceClassesFiltered();
+}
+
+export async function listAttendanceClassesFiltered(filter: ClassListFilter = {}) {
+  const departmentCode = normalizeOptionalText(filter.departmentCode);
+  const facultyCode = normalizeOptionalText(filter.facultyCode);
+
   return await prisma.class.findMany({
+    where: {
+      ...(departmentCode ? { departmentCode } : {}),
+      ...(facultyCode
+        ? {
+            department: {
+              faculty: {
+                code: facultyCode,
+              },
+            },
+          }
+        : {}),
+    },
     orderBy: { code: "asc" },
     include: classInclude,
   });
+}
+
+export async function validateClassListFilter(filter: ClassListFilter) {
+  const departmentCode = normalizeOptionalText(filter.departmentCode);
+  const facultyCode = normalizeOptionalText(filter.facultyCode);
+
+  if (departmentCode) {
+    const department = await prisma.department.findUnique({
+      where: { code: departmentCode },
+      select: { code: true },
+    });
+
+    if (!department) {
+      return { ok: false as const, status: 404, error: "Department code not found" };
+    }
+  }
+
+  if (facultyCode) {
+    const faculty = await prisma.faculty.findUnique({
+      where: { code: facultyCode },
+      select: { code: true },
+    });
+
+    if (!faculty) {
+      return { ok: false as const, status: 404, error: "Faculty code not found" };
+    }
+  }
+
+  return { ok: true as const };
 }
 
 export async function getAttendanceClass(code: string) {
@@ -334,9 +443,11 @@ export async function syncAttendanceClassToDevice(
   const chunkSize = Math.max(64, options.chunkSize ?? DEFAULT_CHUNK_SIZE);
   const students = await getStudentsForClassDepartment(classRecord.departmentCode);
   const sentAt = new Date().toISOString();
-  const commandTopic = getMqttServerTopic(device.deviceId, "class/command");
-  const manifestTopic = getMqttServerTopic(device.deviceId, "template/manifest");
-  const dataTopic = getMqttServerTopic(device.deviceId, "template/data");
+  await publishDeviceClassConfig(device, classRecord);
+
+  const commandTopic = getDeviceCommandTopic(device.deviceId);
+  const manifestTopic = getDeviceTemplateManifestTopic(device.deviceId);
+  const dataTopic = getDeviceTemplateChunkTopic(device.deviceId);
 
   const roster = students.map((student) => ({
     student_id: student.id,
@@ -451,7 +562,11 @@ export async function changeActiveClassOnDevice(
   const chunkSize = DEFAULT_CHUNK_SIZE;
   const sentAt = new Date().toISOString();
   const syncId = `class-${classRecord.code}-${device.deviceId}-${Date.now()}`;
-  const commandTopic = getKampusCommandTopic(device.deviceId);
+  const configResult = await publishDeviceClassConfig(device, classRecord);
+  const commandTopic = getDeviceCommandTopic(device.deviceId);
+  const catalogTopic = getDeviceCatalogTopic(device.deviceId);
+  const manifestTopic = getDeviceTemplateManifestTopic(device.deviceId);
+  const chunkTopic = getDeviceTemplateChunkTopic(device.deviceId);
   const commandPayload = {
     command: "SET_ACTIVE_CLASS",
     device_id: device.deviceId,
@@ -475,7 +590,7 @@ export async function changeActiveClassOnDevice(
       .filter((fingerprintId): fingerprintId is number => fingerprintId !== null),
   }));
 
-  await publishMqtt(DEVICE_TOPICS.catalog, {
+  await publishMqtt(catalogTopic, {
     active_class: classRecord.code,
     class_code: classRecord.code,
     class_name: classRecord.name,
@@ -512,7 +627,7 @@ export async function changeActiveClassOnDevice(
     }
   }
 
-  await publishMqtt(DEVICE_TOPICS.templateManifest, {
+  await publishMqtt(manifestTopic, {
     sync_id: syncId,
     device_id: device.deviceId,
     active_class: classRecord.code,
@@ -534,7 +649,7 @@ export async function changeActiveClassOnDevice(
     for (let index = 0; index < template.chunks.length; index++) {
       chunkCount++;
       await publishMqttBinary(
-        `${DEVICE_TOPICS.templateChunk}/${syncId}/${template.template_uid}/${index + 1}`,
+        `${chunkTopic}/${syncId}/${template.template_uid}/${index + 1}`,
         template.chunks[index]
       );
     }
@@ -551,9 +666,140 @@ export async function changeActiveClassOnDevice(
     chunkCount,
     topics: {
       command: commandTopic,
-      catalog: DEVICE_TOPICS.catalog,
-      manifest: DEVICE_TOPICS.templateManifest,
-      chunk: DEVICE_TOPICS.templateChunk,
+      config: configResult.topic,
+      catalog: catalogTopic,
+      manifest: manifestTopic,
+      chunk: chunkTopic,
+    },
+    payload: commandPayload,
+  };
+}
+
+export async function syncStudentRosterToDevice(input: ActiveClassSyncInput) {
+  const device = await prisma.device.findUnique({
+    where: { deviceId: input.deviceCode },
+  });
+
+  if (!device) {
+    return { ok: false as const, status: 404, error: "Device code not found" };
+  }
+
+  const students = input.students;
+  const chunkSize = DEFAULT_CHUNK_SIZE;
+  const sentAt = new Date().toISOString();
+  const syncId = `course-class-${input.classCode}-${device.deviceId}-${Date.now()}`;
+  const classRecord = {
+    code: input.classCode,
+    name: input.className,
+    departmentCode: input.departmentCode ?? null,
+  };
+  const configResult = await publishDeviceClassConfig(device, classRecord);
+  const commandTopic = getDeviceCommandTopic(device.deviceId);
+  const catalogTopic = getDeviceCatalogTopic(device.deviceId);
+  const manifestTopic = getDeviceTemplateManifestTopic(device.deviceId);
+  const chunkTopic = getDeviceTemplateChunkTopic(device.deviceId);
+  const commandPayload = {
+    command: "SET_ACTIVE_CLASS",
+    device_id: device.deviceId,
+    class_code: input.classCode,
+    class_name: input.className,
+    department_code: input.departmentCode ?? null,
+    student_count: students.length,
+    sent_at: sentAt,
+  };
+
+  await redis.set(`active_class:${device.deviceId}`, input.classCode);
+  activeClassByDevice.set(device.deviceId, input.classCode);
+  await publishMqtt(commandTopic, commandPayload);
+
+  const catalogStudents = students.map((student) => ({
+    nim: student.nim,
+    nama: student.name,
+    name: student.name,
+    fingerprints: student.fingerprints
+      .map((fingerprint) => fingerprint.fingerprintIdOnDevice)
+      .filter((fingerprintId): fingerprintId is number => fingerprintId !== null),
+  }));
+
+  await publishMqtt(catalogTopic, {
+    active_class: input.classCode,
+    class_code: input.classCode,
+    class_name: input.className,
+    department_code: input.departmentCode ?? null,
+    device_id: device.deviceId,
+    students: catalogStudents,
+    sent_at: sentAt,
+  });
+
+  const templateMessages: Array<{
+    template_uid: string;
+    fingerprint_id: number;
+    chunk_total: number;
+    chunks: Buffer[];
+  }> = [];
+
+  for (const student of students) {
+    for (const fingerprint of student.fingerprints) {
+      if (fingerprint.fingerprintIdOnDevice === null) continue;
+
+      const template = await getFingerprintTemplateBytes(fingerprint);
+      if (!template) continue;
+
+      const chunks = chunkTemplateBytes(template, chunkSize);
+      if (chunks.length === 0) continue;
+
+      templateMessages.push({
+        template_uid: `${student.nim}-slot-${fingerprint.slot}`,
+        fingerprint_id: fingerprint.fingerprintIdOnDevice,
+        chunk_total: chunks.length,
+        chunks,
+      });
+    }
+  }
+
+  await publishMqtt(manifestTopic, {
+    sync_id: syncId,
+    device_id: device.deviceId,
+    active_class: input.classCode,
+    class_code: input.classCode,
+    class_name: input.className,
+    department_code: input.departmentCode ?? null,
+    total_templates: templateMessages.length,
+    templates: templateMessages.map((template) => ({
+      template_uid: template.template_uid,
+      fingerprint_id: template.fingerprint_id,
+      chunk_total: template.chunk_total,
+      binary: true,
+    })),
+    sent_at: sentAt,
+  });
+
+  let chunkCount = 0;
+  for (const template of templateMessages) {
+    for (let index = 0; index < template.chunks.length; index++) {
+      chunkCount++;
+      await publishMqttBinary(
+        `${chunkTopic}/${syncId}/${template.template_uid}/${index + 1}`,
+        template.chunks[index]
+      );
+    }
+  }
+
+  return {
+    ok: true as const,
+    deviceCode: device.deviceId,
+    classCode: input.classCode,
+    className: input.className,
+    departmentCode: input.departmentCode ?? null,
+    studentCount: students.length,
+    templateCount: templateMessages.length,
+    chunkCount,
+    topics: {
+      command: commandTopic,
+      config: configResult.topic,
+      catalog: catalogTopic,
+      manifest: manifestTopic,
+      chunk: chunkTopic,
     },
     payload: commandPayload,
   };
@@ -571,7 +817,40 @@ export async function syncClassForDeviceRequest(
   return await changeActiveClassOnDevice(classCode, deviceCode);
 }
 
-export async function setDeviceStandby(deviceCode: string) {
+export async function publishDeviceAssignmentConfig(deviceCode: string) {
+  const device = await prisma.device.findUnique({
+    where: { deviceId: deviceCode },
+  });
+
+  if (!device) {
+    return { ok: false as const, status: 404, error: "Device code not found" };
+  }
+
+  const classRecord = await prisma.class.findFirst({
+    where: { deviceCode: device.deviceId },
+    orderBy: { code: "asc" },
+  });
+
+  if (!classRecord) {
+    return await setDeviceStandby(device.deviceId, { clearTemplates: false });
+  }
+
+  const config = await publishDeviceClassConfig(device, classRecord);
+
+  return {
+    ok: true as const,
+    deviceCode: device.deviceId,
+    classCode: classRecord.code,
+    className: classRecord.name,
+    departmentCode: classRecord.departmentCode,
+    config,
+  };
+}
+
+export async function setDeviceStandby(
+  deviceCode: string,
+  options: { clearTemplates?: boolean } = {}
+) {
   const device = await prisma.device.findUnique({ where: { deviceId: deviceCode } });
 
   if (!device) {
@@ -582,14 +861,26 @@ export async function setDeviceStandby(deviceCode: string) {
   await redis.set(`active_class:${device.deviceId}`, "STANDBY");
 
   const sentAt = new Date().toISOString();
-  const commandTopic = getKampusCommandTopic(device.deviceId);
+  const configTopic = getDeviceConfigTopic(device.deviceId);
+  const commandTopic = getDeviceCommandTopic(device.deviceId);
   const payload = {
     command: "STANDBY",
     device_id: device.deviceId,
-    clear_templates: true,
+    assigned: false,
+    clear_templates: options.clearTemplates ?? true,
     sent_at: sentAt,
   };
 
+  await publishMqtt(configTopic, {
+    ...payload,
+    status: "waiting_assignment",
+    topics: {
+      config: configTopic,
+      command: commandTopic,
+      attendance: getDeviceAttendanceTopic(device.deviceId),
+      status: getDeviceStatusTopic(device.deviceId),
+    },
+  });
   await publishMqtt(commandTopic, payload);
 
   return {
@@ -597,5 +888,51 @@ export async function setDeviceStandby(deviceCode: string) {
     deviceCode: device.deviceId,
     topic: commandTopic,
     payload,
+  };
+}
+
+export async function assignDeviceToClass(
+  deviceCode: string,
+  classCode: string,
+  options: { exclusive?: boolean } = {}
+) {
+  const device = await prisma.device.findUnique({
+    where: { deviceId: deviceCode },
+  });
+
+  if (!device) {
+    return { ok: false as const, status: 404, error: "Device code not found" };
+  }
+
+  const classRecord = await prisma.class.findUnique({
+    where: { code: classCode },
+  });
+
+  if (!classRecord) {
+    return { ok: false as const, status: 404, error: "Class not found" };
+  }
+
+  if (options.exclusive ?? true) {
+    await prisma.class.updateMany({
+      where: {
+        deviceCode: device.deviceId,
+        NOT: { code: classRecord.code },
+      },
+      data: { deviceCode: null },
+    });
+  }
+
+  await prisma.class.update({
+    where: { id: classRecord.id },
+    data: { deviceCode: device.deviceId },
+  });
+
+  const config = await publishDeviceAssignmentConfig(device.deviceId);
+
+  return {
+    ok: true as const,
+    deviceCode: device.deviceId,
+    classCode: classRecord.code,
+    config,
   };
 }

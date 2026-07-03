@@ -11,10 +11,16 @@ import { redis } from "./redis";
 
 const TOPIC_PREFIX = process.env.MQTT_TOPIC_PREFIX ?? "presence";
 const SERVER_TOPIC_PREFIX = `${TOPIC_PREFIX}/server`;
+const DEVICE_TOPIC_PREFIX = `${TOPIC_PREFIX}/devices`;
 
 const TOPICS = {
+  PROVISIONING_DISCOVER: `${TOPIC_PREFIX}/provisioning/discover`,
   ATTENDANCE: `${TOPIC_PREFIX}/+/attendance`,
+  DEVICE_ATTENDANCE: `${DEVICE_TOPIC_PREFIX}/+/attendance`,
+  LEGACY_PRESENSI: `${TOPIC_PREFIX}/presensi`,
   DEVICE_PING: `${TOPIC_PREFIX}/+/ping`,
+  DEVICE_STATUS: `${DEVICE_TOPIC_PREFIX}/+/status`,
+  DEVICE_TEMPLATE_REQUEST: `${DEVICE_TOPIC_PREFIX}/+/template/request`,
   TEMPLATE_REQUEST: `${TOPIC_PREFIX}/mahasiswa/templates/request`,
   REGISTRATION_RESULT: `${TOPIC_PREFIX}/mahasiswa/registrasi`,
   REGISTRATION_TEMPLATE: `${TOPIC_PREFIX}/mahasiswa/registrasi/template/#`,
@@ -24,8 +30,10 @@ const MQTT_DEBUG = (process.env.MQTT_DEBUG ?? "").toLowerCase() === "true";
 const SUBSCRIBE_QOS = 1;
 
 type TopicRoute =
+  | "provisioning/discover"
   | "attendance"
   | "ping"
+  | "status"
   | "template/request"
   | "registration/result"
   | "registration/template";
@@ -42,6 +50,7 @@ interface AttendancePayload {
   device_id: string;
   fingerprint_id?: number;
   finger_id?: number;
+  scan_id?: string | number;
   action?: "check_in" | "check_out";
   match_score?: number;
   confidence?: number;
@@ -52,6 +61,17 @@ interface PingPayload {
   device_id: string;
   firmware_version?: string;
   uptime_seconds?: number;
+}
+
+interface DeviceDiscoveryPayload {
+  device_id?: string;
+  deviceId?: string;
+  mac_address?: string;
+  macAddress?: string;
+  firmware_version?: string;
+  firmwareVersion?: string;
+  status?: string;
+  ip?: string;
 }
 
 interface TemplateSyncRequestPayload {
@@ -117,6 +137,7 @@ function summarizeAttendancePayload(payload: AttendancePayload) {
   return {
     device_id: payload.device_id,
     fingerprint_id: payload.fingerprint_id ?? payload.finger_id,
+    scan_id: payload.scan_id ?? null,
     action: payload.action ?? "check_in",
     match_score: payload.match_score ?? payload.confidence,
     has_timestamp: typeof payload.timestamp === "string",
@@ -135,6 +156,8 @@ function resolveTopicRoute(topic: string): TopicRoute | null {
   if (!topic.startsWith(`${TOPIC_PREFIX}/`)) return null;
 
   const fullSuffix = topic.slice(TOPIC_PREFIX.length + 1);
+  if (fullSuffix === "provisioning/discover") return "provisioning/discover";
+  if (fullSuffix === "presensi") return "attendance";
   if (fullSuffix === "mahasiswa/templates/request") return "template/request";
   if (fullSuffix === "mahasiswa/registrasi") return "registration/result";
   if (fullSuffix.startsWith("mahasiswa/registrasi/template/")) {
@@ -142,6 +165,14 @@ function resolveTopicRoute(topic: string): TopicRoute | null {
   }
 
   const parts = topic.split("/");
+  if (parts[1] === "devices" && parts.length >= 4) {
+    const suffix = parts.slice(3).join("/");
+    if (suffix === "attendance") return "attendance";
+    if (suffix === "ping") return "ping";
+    if (suffix === "status") return "status";
+    if (suffix === "template/request") return "template/request";
+  }
+
   if (parts.length < 3) return null;
 
   const suffix = parts.slice(2).join("/");
@@ -170,6 +201,20 @@ function isValidPing(p: unknown): p is PingPayload {
   return typeof o.device_id === "string";
 }
 
+function getDiscoveryDeviceId(payload: DeviceDiscoveryPayload) {
+  const deviceId = payload.device_id ?? payload.deviceId;
+  return typeof deviceId === "string" && deviceId.trim().length > 0
+    ? deviceId.trim()
+    : null;
+}
+
+function getDiscoveryFirmwareVersion(payload: DeviceDiscoveryPayload) {
+  const version = payload.firmware_version ?? payload.firmwareVersion;
+  return typeof version === "string" && version.trim().length > 0
+    ? version.trim()
+    : null;
+}
+
 function isValidTemplateSyncRequest(p: unknown): p is TemplateSyncRequestPayload {
   if (!p || typeof p !== "object") return false;
   const o = p as Record<string, unknown>;
@@ -189,6 +234,7 @@ function isValidRegistrationResult(p: unknown): p is RegistrationResultPayload {
 
 function extractDeviceId(topic: string): string | null {
   const parts = topic.split("/");
+  if (parts[1] === "devices" && parts.length >= 3) return parts[2];
   return parts.length >= 2 ? parts[1] : null;
 }
 
@@ -278,6 +324,28 @@ async function handleAttendance(payload: AttendancePayload) {
   const action = payload.action === "check_out" ? "CHECK_OUT" : "CHECK_IN";
   const matchScore = payload.match_score ?? payload.confidence ?? null;
 
+  const publishAttendanceAck = async (
+    status: "recorded" | "duplicate" | "rejected",
+    message: string,
+    studentId?: string | null
+  ) => {
+    if (!mqttClient?.connected) return;
+
+    await publishAsync(
+      mqttClient,
+      getMqttServerTopic(payload.device_id, "attendance/ack"),
+      {
+        device_id: payload.device_id,
+        scan_id: payload.scan_id ?? null,
+        fingerprint_id: fingerprintId,
+        student_id: studentId ?? null,
+        status,
+        message,
+        timestamp: new Date().toISOString(),
+      }
+    );
+  };
+
   const device = await prisma.device.findUnique({
     where: { deviceId: payload.device_id },
   });
@@ -288,11 +356,15 @@ async function handleAttendance(payload: AttendancePayload) {
       ...summarizeAttendancePayload(payload),
       student_id: fingerprint?.studentId ?? null,
     });
+    await publishAttendanceAck("rejected", "unknown_device", fingerprint?.studentId ?? null);
     return;
   }
 
   const cachedScheduleId = await redis.get(
     `active_schedule:${payload.device_id}`
+  );
+  const activeSessionId = await redis.get(
+    `active_attendance_session:${payload.device_id}`
   );
 
   await prisma.attendanceEvent.create({
@@ -300,6 +372,7 @@ async function handleAttendance(payload: AttendancePayload) {
       studentId: fingerprint?.studentId ?? null,
       deviceId: device.id,
       scheduleId: cachedScheduleId ?? null,
+      sessionId: activeSessionId ?? null,
       action,
       matchScore,
       eventTime: payload.timestamp ? new Date(payload.timestamp) : new Date(),
@@ -307,16 +380,107 @@ async function handleAttendance(payload: AttendancePayload) {
     },
   });
 
+  if (!fingerprint) {
+    console.warn(
+      `[MQTT] Attendance rejected: fingerprint ${fingerprintId} is not registered`
+    );
+    await publishAttendanceAck("rejected", "fingerprint_not_registered", null);
+    return;
+  }
+
+  if (!activeSessionId) {
+    console.warn(
+      `[MQTT] Attendance rejected: no active attendance session for device ${payload.device_id}`
+    );
+    await publishAttendanceAck("rejected", "no_active_attendance_session", fingerprint.studentId);
+    return;
+  }
+
+  const activeSession = await prisma.attendanceSession.findUnique({
+    where: { id: activeSessionId },
+    include: {
+      courseClass: {
+        include: {
+          enrollments: {
+            where: {
+              studentId: fingerprint.studentId,
+              status: "ACTIVE",
+            },
+            select: { id: true },
+          },
+        },
+      },
+    },
+  });
+
+  if (!activeSession || activeSession.status !== "OPEN") {
+    console.warn(
+      `[MQTT] Attendance rejected: active session ${activeSessionId} is not open`
+    );
+    await publishAttendanceAck("rejected", "attendance_session_not_open", fingerprint.studentId);
+    return;
+  }
+
+  if (activeSession.courseClass.enrollments.length === 0) {
+    console.warn(
+      `[MQTT] Attendance rejected: student ${fingerprint.studentId} is not enrolled in ${activeSession.courseClass.code}`
+    );
+    await publishAttendanceAck("rejected", "student_not_enrolled", fingerprint.studentId);
+    return;
+  }
+
+  const existingRecord = await prisma.attendanceRecord.findUnique({
+    where: {
+      attendanceSessionId_studentId: {
+        attendanceSessionId: activeSession.id,
+        studentId: fingerprint.studentId,
+      },
+    },
+    select: { id: true },
+  });
+
+  if (existingRecord) {
+    console.log(
+      `[MQTT] Duplicate attendance ignored: student ${fingerprint.studentId} already recorded on session ${activeSession.id}`
+    );
+    await publishAttendanceAck("duplicate", "already_attended", fingerprint.studentId);
+    return;
+  }
+
+  try {
+    await prisma.attendanceRecord.create({
+      data: {
+        attendanceSessionId: activeSession.id,
+        studentId: fingerprint.studentId,
+        checkedAt: payload.timestamp ? new Date(payload.timestamp) : new Date(),
+        status: "PRESENT",
+        source: "BIOMETRIC",
+        matchScore,
+        rawPayload: payload as object,
+      },
+    });
+  } catch (error) {
+    if ((error as { code?: string }).code === "P2002") {
+      await publishAttendanceAck("duplicate", "already_attended", fingerprint.studentId);
+      return;
+    }
+
+    throw error;
+  }
+
   console.log(
-    `[MQTT] Attendance recorded: ${action} by student ${fingerprint?.studentId ?? "UNKNOWN"} on ${payload.device_id}`
+    `[MQTT] Attendance recorded: ${action} by student ${fingerprint.studentId} on ${payload.device_id}`
   );
 
   debugLog("Attendance handler completed", {
     ...summarizeAttendancePayload(payload),
     action_recorded: action,
-    student_id: fingerprint?.studentId ?? null,
+    student_id: fingerprint.studentId,
     schedule_id: cachedScheduleId ?? null,
+    session_id: activeSession.id,
   });
+
+  await publishAttendanceAck("recorded", "attendance_recorded", fingerprint.studentId);
 }
 
 async function handleDevicePing(payload: PingPayload) {
@@ -338,6 +502,71 @@ async function handleDevicePing(payload: PingPayload) {
   await redis.set(`device:${payload.device_id}:status`, "ONLINE", "EX", 300);
 
   debugLog("Ping handler completed", summarizePingPayload(payload));
+}
+
+async function publishAssignmentForDevice(deviceId: string) {
+  const { publishDeviceAssignmentConfig } = await import(
+    "../modules/classes/classes.service"
+  );
+  await publishDeviceAssignmentConfig(deviceId);
+}
+
+async function handleDeviceDiscovery(payload: DeviceDiscoveryPayload) {
+  const deviceId = getDiscoveryDeviceId(payload);
+  if (!deviceId) {
+    debugLog("Invalid device discovery payload", describePayloadShape(payload));
+    return;
+  }
+
+  const firmwareVersion = getDiscoveryFirmwareVersion(payload);
+
+  await prisma.device.upsert({
+    where: { deviceId },
+    update: {
+      status: "ONLINE",
+      lastPing: new Date(),
+      firmwareVersion: firmwareVersion ?? undefined,
+    },
+    create: {
+      deviceId,
+      status: "ONLINE",
+      lastPing: new Date(),
+      firmwareVersion: firmwareVersion ?? undefined,
+    },
+  });
+
+  await redis.set(`device:${deviceId}:status`, "ONLINE", "EX", 300);
+
+  console.log(`[MQTT] Device discovered: ${deviceId}`);
+  await publishAssignmentForDevice(deviceId);
+}
+
+async function handleDeviceStatus(payload: DeviceDiscoveryPayload) {
+  const deviceId = getDiscoveryDeviceId(payload);
+  if (!deviceId) {
+    debugLog("Invalid device status payload", describePayloadShape(payload));
+    return;
+  }
+
+  const firmwareVersion = getDiscoveryFirmwareVersion(payload);
+
+  await prisma.device.upsert({
+    where: { deviceId },
+    update: {
+      status: "ONLINE",
+      lastPing: new Date(),
+      firmwareVersion: firmwareVersion ?? undefined,
+    },
+    create: {
+      deviceId,
+      status: "ONLINE",
+      lastPing: new Date(),
+      firmwareVersion: firmwareVersion ?? undefined,
+    },
+  });
+
+  await redis.set(`device:${deviceId}:status`, "ONLINE", "EX", 300);
+  debugLog("Device status updated", { device_id: deviceId });
 }
 
 async function handleTemplateSyncRequest(payload: TemplateSyncRequestPayload) {
@@ -473,8 +702,13 @@ export function startMqttSubscriber() {
   const clientId = `bioesign-server-${Date.now()}`;
 
   const topics = [
+    TOPICS.PROVISIONING_DISCOVER,
     TOPICS.ATTENDANCE,
+    TOPICS.DEVICE_ATTENDANCE,
+    TOPICS.LEGACY_PRESENSI,
     TOPICS.DEVICE_PING,
+    TOPICS.DEVICE_STATUS,
+    TOPICS.DEVICE_TEMPLATE_REQUEST,
     TOPICS.TEMPLATE_REQUEST,
     TOPICS.REGISTRATION_RESULT,
     TOPICS.REGISTRATION_TEMPLATE,
@@ -543,12 +777,22 @@ export function startMqttSubscriber() {
       }
 
       const topicDeviceId = extractDeviceId(topic);
-      if (topicDeviceId && payload.device_id && topicDeviceId !== payload.device_id) {
+      if (
+        route !== "provisioning/discover" &&
+        topicDeviceId &&
+        payload.device_id &&
+        topicDeviceId !== payload.device_id
+      ) {
         debugLog("Device ID mismatch between topic and payload", {
           topic_device_id: topicDeviceId,
           payload_device_id: payload.device_id,
           topic,
         });
+      }
+
+      if (route === "provisioning/discover") {
+        await handleDeviceDiscovery(payload);
+        return;
       }
 
       if (route === "attendance") {
@@ -572,6 +816,11 @@ export function startMqttSubscriber() {
           return;
         }
         await handleDevicePing(payload);
+        return;
+      }
+
+      if (route === "status") {
+        await handleDeviceStatus(payload);
         return;
       }
 
@@ -625,4 +874,8 @@ export async function publishMqttBinary(topic: string, payload: Buffer | Uint8Ar
 
 export function getMqttServerTopic(deviceId: string, suffix: string) {
   return `${SERVER_TOPIC_PREFIX}/${deviceId}/${suffix}`;
+}
+
+export function getMqttDeviceTopic(deviceId: string, suffix: string) {
+  return `${DEVICE_TOPIC_PREFIX}/${deviceId}/${suffix}`;
 }

@@ -2,30 +2,24 @@ import { Elysia, t } from "elysia";
 import { prisma } from "../../lib/prisma";
 import { redis } from "../../lib/redis";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
-import { setDeviceStandby } from "../classes/classes.service";
+import { assignDeviceToClass, setDeviceStandby } from "../classes/classes.service";
 
 function mapDeviceBody(body: {
-  deviceId?: string;
   device_id?: string;
-  deviceCode?: string;
   device_code?: string;
   status?: "ONLINE" | "OFFLINE" | "MAINTENANCE" | "ERROR";
-  firmwareVersion?: string | null;
   firmware_version?: string | null;
 }) {
-  const deviceCode =
-    body.deviceCode ?? body.device_code ?? body.deviceId ?? body.device_id;
+  const deviceCode = body.device_code ?? body.device_id;
 
   return {
-    ...(body.deviceCode !== undefined ||
-    body.device_code !== undefined ||
-    body.deviceId !== undefined ||
+    ...(body.device_code !== undefined ||
     body.device_id !== undefined
       ? { deviceId: deviceCode }
       : {}),
     ...(body.status !== undefined ? { status: body.status } : {}),
-    ...(body.firmwareVersion !== undefined || body.firmware_version !== undefined
-      ? { firmwareVersion: body.firmwareVersion ?? body.firmware_version ?? null }
+    ...(body.firmware_version !== undefined
+      ? { firmwareVersion: body.firmware_version ?? null }
       : {}),
   };
 }
@@ -37,7 +31,7 @@ async function findDeviceIdentity(deviceId: string) {
   });
 }
 
-export const deviceRoutes = new Elysia({ prefix: "/devices" })
+export const deviceRoutes = new Elysia({ prefix: "/devices", tags: ["Devices"] })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
   .get("/", async ({ query }) => {
@@ -72,9 +66,9 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
       online: t.Optional(t.Boolean()),
     }),
   })
-  .get("/:deviceCode", async ({ params, set }) => {
+  .get("/:device_code", async ({ params, set }) => {
     const device = await prisma.device.findUnique({
-      where: { deviceId: params.deviceCode },
+      where: { deviceId: params.device_code },
       include: {
         classes: {
           include: {
@@ -90,46 +84,48 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
     }
     return device;
   }, {
-    params: t.Object({ deviceCode: t.String() }),
+    params: t.Object({ device_code: t.String() }),
   })
   .post("/", async ({ body, set }) => {
-    const data = mapDeviceBody(body);
+    const deviceId = body.device_id.trim();
+    const classCode = body.class_code.trim();
 
-    if (!data.deviceId) {
+    if (!deviceId) {
       set.status = 400;
-      return { error: "device_code is required" };
+      return { error: "device_id is required" };
     }
 
-    const device = await prisma.device.create({
-      data: {
-        ...data,
-        deviceId: data.deviceId,
-        status: body.status ?? "OFFLINE",
+    if (!classCode) {
+      set.status = 400;
+      return { error: "class_code is required" };
+    }
+
+    await prisma.device.upsert({
+      where: { deviceId },
+      update: {},
+      create: {
+        deviceId,
+        status: "OFFLINE",
       },
-      include: { classes: true },
     });
+
+    const assignment = await assignDeviceToClass(deviceId, classCode);
+
+    if (!assignment.ok) {
+      set.status = assignment.status;
+      return { error: assignment.error };
+    }
+
     set.status = 201;
-    return device;
+    return assignment;
   }, {
     body: t.Object({
-      deviceId: t.Optional(t.String()),
-      device_id: t.Optional(t.String()),
-      deviceCode: t.Optional(t.String()),
-      device_code: t.Optional(t.String()),
-      status: t.Optional(
-        t.Union([
-          t.Literal("ONLINE"),
-          t.Literal("OFFLINE"),
-          t.Literal("MAINTENANCE"),
-          t.Literal("ERROR"),
-        ])
-      ),
-      firmwareVersion: t.Optional(t.Union([t.String(), t.Null()])),
-      firmware_version: t.Optional(t.Union([t.String(), t.Null()])),
+      device_id: t.String(),
+      class_code: t.String(),
     }),
   })
-  .put("/:deviceCode", async ({ params, body, set }) => {
-    const existing = await findDeviceIdentity(params.deviceCode);
+  .put("/:device_code", async ({ params, body, set }) => {
+    const existing = await findDeviceIdentity(params.device_code);
     if (!existing) {
       set.status = 404;
       return { error: "Device not found" };
@@ -141,11 +137,9 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
     });
     return device;
   }, {
-    params: t.Object({ deviceCode: t.String() }),
+    params: t.Object({ device_code: t.String() }),
     body: t.Object({
-      deviceId: t.Optional(t.String()),
       device_id: t.Optional(t.String()),
-      deviceCode: t.Optional(t.String()),
       device_code: t.Optional(t.String()),
       status: t.Optional(
         t.Union([
@@ -155,17 +149,16 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
           t.Literal("ERROR"),
         ])
       ),
-      firmwareVersion: t.Optional(t.Union([t.String(), t.Null()])),
       firmware_version: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
-  .post("/:deviceCode/commands", async ({ params, body, set }) => {
+  .post("/:device_code/commands", async ({ params, body, set }) => {
     if (body.type !== "STANDBY") {
       set.status = 400;
       return { error: "Unsupported command type" };
     }
 
-    const result = await setDeviceStandby(params.deviceCode);
+    const result = await setDeviceStandby(params.device_code);
 
     if (!result.ok) {
       set.status = result.status;
@@ -178,13 +171,40 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
       type: body.type,
     };
   }, {
-    params: t.Object({ deviceCode: t.String() }),
+    params: t.Object({ device_code: t.String() }),
     body: t.Object({
       type: t.Literal("STANDBY"),
     }),
   })
-  .delete("/:deviceCode", async ({ params, set }) => {
-    const identity = await findDeviceIdentity(params.deviceCode);
+  .post("/:device_code/class-assignments", async ({ params, body, set }) => {
+    const classCode = body.class_code;
+    if (!classCode) {
+      set.status = 400;
+      return { error: "class_code is required" };
+    }
+
+    const result = await assignDeviceToClass(
+      params.device_code,
+      classCode,
+      { exclusive: body.exclusive }
+    );
+
+    if (!result.ok) {
+      set.status = result.status;
+      return { error: result.error };
+    }
+
+    set.status = 201;
+    return result;
+  }, {
+    params: t.Object({ device_code: t.String() }),
+    body: t.Object({
+      class_code: t.Optional(t.String()),
+      exclusive: t.Optional(t.Boolean()),
+    }),
+  })
+  .delete("/:device_code", async ({ params, set }) => {
+    const identity = await findDeviceIdentity(params.device_code);
 
     if (!identity) {
       set.status = 404;
@@ -210,5 +230,5 @@ export const deviceRoutes = new Elysia({ prefix: "/devices" })
     await prisma.device.delete({ where: { id: identity.id } });
     return { message: "Device deleted" };
   }, {
-    params: t.Object({ deviceCode: t.String() }),
+    params: t.Object({ device_code: t.String() }),
   });

@@ -4,20 +4,17 @@ import { redis } from "../../lib/redis";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
 
 async function resolveScheduleData(body: {
-  courseCode?: string;
   course_code?: string;
-  lecturerNidn?: string;
   lecturer_nidn?: string;
-  deviceCode?: string;
   device_code?: string;
-  dayOfWeek?: number;
-  startTime?: string;
-  endTime?: string;
-  roomName?: string | null;
+  day_of_week?: number;
+  start_time?: string;
+  end_time?: string;
+  room_name?: string | null;
 }) {
   const data: Record<string, unknown> = {};
 
-  const courseCode = body.courseCode ?? body.course_code;
+  const courseCode = body.course_code;
   if (courseCode !== undefined) {
     const course = await prisma.course.findUnique({
       where: { code: courseCode },
@@ -29,7 +26,7 @@ async function resolveScheduleData(body: {
     data.courseId = course.id;
   }
 
-  const lecturerNidn = body.lecturerNidn ?? body.lecturer_nidn;
+  const lecturerNidn = body.lecturer_nidn;
   if (lecturerNidn !== undefined) {
     const lecturer = await prisma.lecturer.findUnique({
       where: { nidn: lecturerNidn },
@@ -41,7 +38,7 @@ async function resolveScheduleData(body: {
     data.lecturerId = lecturer.id;
   }
 
-  const deviceCode = body.deviceCode ?? body.device_code;
+  const deviceCode = body.device_code;
   if (deviceCode !== undefined) {
     const device = await prisma.device.findUnique({
       where: { deviceId: deviceCode },
@@ -53,15 +50,15 @@ async function resolveScheduleData(body: {
     data.deviceId = device.id;
   }
 
-  if (body.dayOfWeek !== undefined) data.dayOfWeek = body.dayOfWeek;
-  if (body.startTime !== undefined) data.startTime = new Date(body.startTime);
-  if (body.endTime !== undefined) data.endTime = new Date(body.endTime);
-  if (body.roomName !== undefined) data.roomName = body.roomName;
+  if (body.day_of_week !== undefined) data.dayOfWeek = body.day_of_week;
+  if (body.start_time !== undefined) data.startTime = new Date(body.start_time);
+  if (body.end_time !== undefined) data.endTime = new Date(body.end_time);
+  if (body.room_name !== undefined) data.roomName = body.room_name;
 
   return { ok: true as const, data };
 }
 
-export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
+export const scheduleRoutes = new Elysia({ prefix: "/schedules", tags: ["Schedules"] })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
   .get("/", async () => {
@@ -93,7 +90,7 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
     if (!result.data.courseId || !result.data.lecturerId || !result.data.deviceId) {
       set.status = 400;
       return {
-        error: "courseCode, lecturerNidn, and deviceCode are required",
+        error: "course_code, lecturer_nidn, and device_code are required",
       };
     }
 
@@ -103,10 +100,10 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
         courseId: result.data.courseId as string,
         lecturerId: result.data.lecturerId as string,
         deviceId: result.data.deviceId as string,
-        dayOfWeek: body.dayOfWeek,
-        startTime: new Date(body.startTime),
-        endTime: new Date(body.endTime),
-        roomName: body.roomName,
+        dayOfWeek: body.day_of_week,
+        startTime: new Date(body.start_time),
+        endTime: new Date(body.end_time),
+        roomName: body.room_name,
       },
       include: { course: true, lecturer: true, device: true },
     });
@@ -114,16 +111,13 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
     return schedule;
   }, {
     body: t.Object({
-      courseCode: t.Optional(t.String()),
       course_code: t.Optional(t.String()),
-      lecturerNidn: t.Optional(t.String()),
       lecturer_nidn: t.Optional(t.String()),
-      deviceCode: t.Optional(t.String()),
       device_code: t.Optional(t.String()),
-      dayOfWeek: t.Number({ minimum: 0, maximum: 6 }),
-      startTime: t.String(),
-      endTime: t.String(),
-      roomName: t.Optional(t.Union([t.String(), t.Null()])),
+      day_of_week: t.Number({ minimum: 0, maximum: 6 }),
+      start_time: t.String(),
+      end_time: t.String(),
+      room_name: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
   .put("/:id", async ({ params, body, set }) => {
@@ -147,16 +141,13 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
   }, {
     params: t.Object({ id: t.String() }),
     body: t.Object({
-      courseCode: t.Optional(t.String()),
       course_code: t.Optional(t.String()),
-      lecturerNidn: t.Optional(t.String()),
       lecturer_nidn: t.Optional(t.String()),
-      deviceCode: t.Optional(t.String()),
       device_code: t.Optional(t.String()),
-      dayOfWeek: t.Optional(t.Number({ minimum: 0, maximum: 6 })),
-      startTime: t.Optional(t.String()),
-      endTime: t.Optional(t.String()),
-      roomName: t.Optional(t.Union([t.String(), t.Null()])),
+      day_of_week: t.Optional(t.Number({ minimum: 0, maximum: 6 })),
+      start_time: t.Optional(t.String()),
+      end_time: t.Optional(t.String()),
+      room_name: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
   .delete("/:id", async ({ params, set }) => {
@@ -181,10 +172,10 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
       return { error: "Schedule not found" };
     }
 
-    const deviceCode = body.deviceCode ?? body.device_code ?? schedule.device?.deviceId;
+    const deviceCode = body.device_code ?? schedule.device?.deviceId;
     if (!deviceCode) {
       set.status = 400;
-      return { error: "deviceCode is required" };
+      return { error: "device_code is required" };
     }
 
     await redis.set(
@@ -194,11 +185,10 @@ export const scheduleRoutes = new Elysia({ prefix: "/schedules" })
       14400
     );
     set.status = 201;
-    return { message: "Schedule activation created", deviceCode, scheduleId: params.id };
+    return { message: "Schedule activation created", device_code: deviceCode, schedule_id: params.id };
   }, {
     params: t.Object({ id: t.String() }),
     body: t.Object({
-      deviceCode: t.Optional(t.String()),
       device_code: t.Optional(t.String()),
     }),
   });

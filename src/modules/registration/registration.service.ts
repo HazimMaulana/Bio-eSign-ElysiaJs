@@ -1,8 +1,6 @@
 import { prisma } from "../../lib/prisma";
 import { encryptTemplateBytes } from "../../lib/crypto";
-import { publishMqtt } from "../../lib/mqtt";
-
-const DEVICE_TOPIC_PREFIX = process.env.MQTT_DEVICE_TOPIC_PREFIX ?? "presence";
+import { getMqttDeviceTopic, publishMqtt } from "../../lib/mqtt";
 
 type StoreRegistrationTemplateInput = {
   nim: string;
@@ -15,7 +13,7 @@ type StoreRegistrationTemplateInput = {
 };
 
 function getCommandTopic(deviceId: string) {
-  return `${DEVICE_TOPIC_PREFIX}/device/${deviceId}/command`;
+  return getMqttDeviceTopic(deviceId, "command");
 }
 
 function normalizeSlot(slot: number) {
@@ -36,9 +34,8 @@ function normalizeFingerprintId(fingerprintId?: number | null) {
 }
 
 export async function startDeviceRegistration(input: {
-  deviceId: string;
+  deviceId?: string;
   nim: string;
-  name: string;
   slot?: number;
   classCode?: string;
 }) {
@@ -54,27 +51,61 @@ export async function startDeviceRegistration(input: {
   }
 
   const nim = input.nim.trim();
-  const name = input.name.trim();
   if (!nim) {
     return { ok: false as const, status: 400, error: "nim is required" };
   }
-  if (!name) {
-    return { ok: false as const, status: 400, error: "name is required" };
+
+  const classCode = input.classCode?.trim();
+  if (!classCode) {
+    return { ok: false as const, status: 400, error: "class_code is required" };
+  }
+
+  const classRecord = await prisma.class.findUnique({
+    where: { code: classCode },
+    select: {
+      code: true,
+      deviceCode: true,
+    },
+  });
+
+  if (!classRecord) {
+    return { ok: false as const, status: 404, error: "Class not found" };
+  }
+
+  const resolvedDeviceId = input.deviceId?.trim() || classRecord.deviceCode;
+  if (!resolvedDeviceId) {
+    return {
+      ok: false as const,
+      status: 400,
+      error: "Class device is not set. Send device_id or assign a device to this class first",
+    };
   }
 
   const device = await prisma.device.findUnique({
-    where: { deviceId: input.deviceId },
+    where: { deviceId: resolvedDeviceId },
   });
 
   if (!device) {
     return { ok: false as const, status: 404, error: "Device not found" };
   }
 
-  const student = await prisma.student.upsert({
+  const student = await prisma.student.findUnique({
     where: { nim },
-    update: { name, isActive: true },
-    create: { nim, name, isActive: true },
+    select: {
+      id: true,
+      nim: true,
+      name: true,
+      isActive: true,
+    },
   });
+
+  if (!student) {
+    return { ok: false as const, status: 404, error: "Student NIM not found" };
+  }
+
+  if (!student.isActive) {
+    return { ok: false as const, status: 400, error: "Student is inactive" };
+  }
 
   const topic = getCommandTopic(device.deviceId);
   const payload = {
@@ -82,10 +113,9 @@ export async function startDeviceRegistration(input: {
     status: "register",
     device_id: device.deviceId,
     nim: student.nim,
-    nama: student.name,
     name: student.name,
     slot,
-    class_code: input.classCode,
+    class_code: classRecord.code,
     sent_at: new Date().toISOString(),
   };
 

@@ -5,10 +5,9 @@ import { decryptTemplateBytes } from "../../lib/crypto";
 import { storeRegistrationTemplateFromBinary } from "../registration/registration.service";
 
 function getDepartmentCode(body: {
-  departmentCode?: string | null;
   department_code?: string | null;
 }) {
-  return body.departmentCode ?? body.department_code;
+  return body.department_code;
 }
 
 async function findStudentIdentity(nim: string) {
@@ -39,8 +38,7 @@ async function buildStudentData(body: {
   nim?: string;
   name?: string;
   email?: string | null;
-  isActive?: boolean;
-  departmentCode?: string | null;
+  is_active?: boolean;
   department_code?: string | null;
 }) {
   const data: {
@@ -53,13 +51,10 @@ async function buildStudentData(body: {
     ...(body.nim !== undefined ? { nim: body.nim } : {}),
     ...(body.name !== undefined ? { name: body.name } : {}),
     ...(body.email !== undefined ? { email: body.email } : {}),
-    ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
+    ...(body.is_active !== undefined ? { isActive: body.is_active } : {}),
   };
 
-  if (
-    body.departmentCode !== undefined ||
-    body.department_code !== undefined
-  ) {
+  if (body.department_code !== undefined) {
     const departmentCode = getDepartmentCode(body);
 
     if (departmentCode === null || departmentCode === undefined) {
@@ -85,7 +80,7 @@ async function buildStudentData(body: {
   return { ok: true as const, data };
 }
 
-export const studentRoutes = new Elysia({ prefix: "/students" })
+export const studentRoutes = new Elysia({ prefix: "/students", tags: ["Students"] })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
   .get("/", async () => {
@@ -182,11 +177,11 @@ export const studentRoutes = new Elysia({ prefix: "/students" })
       name: formValueToString(form.name ?? form.nama) || student.name,
       slot: params.slot,
       fingerprintId: formValueToOptionalNumber(
-        form.fingerprintId ?? form.fingerprint_id ?? form.finger_id
+        form.fingerprint_id
       ),
       templateBytes: await template.arrayBuffer(),
-      deviceId: formValueToString(form.deviceId ?? form.device_id),
-      classCode: formValueToString(form.classCode ?? form.class_code),
+      deviceId: formValueToString(form.device_id),
+      classCode: formValueToString(form.class_code),
     });
 
     if (!result.ok) {
@@ -214,7 +209,7 @@ export const studentRoutes = new Elysia({ prefix: "/students" })
         ...result.data,
         nim: body.nim,
         name: body.name,
-        isActive: body.isActive ?? true,
+        isActive: body.is_active ?? true,
       },
       include: { department: { include: { faculty: true } } },
     });
@@ -225,8 +220,7 @@ export const studentRoutes = new Elysia({ prefix: "/students" })
       nim: t.String(),
       name: t.String(),
       email: t.Optional(t.Union([t.String(), t.Null()])),
-      isActive: t.Optional(t.Boolean()),
-      departmentCode: t.Optional(t.Union([t.String(), t.Null()])),
+      is_active: t.Optional(t.Boolean()),
       department_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
@@ -254,8 +248,7 @@ export const studentRoutes = new Elysia({ prefix: "/students" })
       nim: t.Optional(t.String()),
       name: t.Optional(t.String()),
       email: t.Optional(t.Union([t.String(), t.Null()])),
-      isActive: t.Optional(t.Boolean()),
-      departmentCode: t.Optional(t.Union([t.String(), t.Null()])),
+      is_active: t.Optional(t.Boolean()),
       department_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })

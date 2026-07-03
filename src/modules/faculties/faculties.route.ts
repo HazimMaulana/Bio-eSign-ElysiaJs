@@ -9,7 +9,7 @@ async function findFacultyIdentity(code: string) {
   });
 }
 
-export const facultyRoutes = new Elysia({ prefix: "/faculties" })
+export const facultyRoutes = new Elysia({ prefix: "/faculties", tags: ["Faculties"] })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
   .get("/", async () => {

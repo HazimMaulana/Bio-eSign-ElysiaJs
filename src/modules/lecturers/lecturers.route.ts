@@ -3,10 +3,9 @@ import { prisma } from "../../lib/prisma";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
 
 function getDepartmentCode(body: {
-  departmentCode?: string | null;
   department_code?: string | null;
 }) {
-  return body.departmentCode ?? body.department_code;
+  return body.department_code;
 }
 
 async function findLecturerIdentity(nidn: string) {
@@ -20,7 +19,6 @@ async function buildLecturerData(body: {
   nidn?: string;
   name?: string;
   email?: string;
-  departmentCode?: string | null;
   department_code?: string | null;
 }) {
   const data: {
@@ -34,10 +32,7 @@ async function buildLecturerData(body: {
     ...(body.email !== undefined ? { email: body.email } : {}),
   };
 
-  if (
-    body.departmentCode !== undefined ||
-    body.department_code !== undefined
-  ) {
+  if (body.department_code !== undefined) {
     const departmentCode = getDepartmentCode(body);
 
     if (!departmentCode) {
@@ -67,7 +62,7 @@ async function buildLecturerData(body: {
   return { ok: true as const, data };
 }
 
-export const lecturerRoutes = new Elysia({ prefix: "/lecturers" })
+export const lecturerRoutes = new Elysia({ prefix: "/lecturers", tags: ["Lecturers"] })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
   .get("/", async () => {
@@ -122,7 +117,6 @@ export const lecturerRoutes = new Elysia({ prefix: "/lecturers" })
       nidn: t.String(),
       name: t.String(),
       email: t.String(),
-      departmentCode: t.Optional(t.String()),
       department_code: t.Optional(t.String()),
     }),
   })
@@ -150,7 +144,6 @@ export const lecturerRoutes = new Elysia({ prefix: "/lecturers" })
       nidn: t.Optional(t.String()),
       name: t.Optional(t.String()),
       email: t.Optional(t.String()),
-      departmentCode: t.Optional(t.String()),
       department_code: t.Optional(t.String()),
     }),
   })

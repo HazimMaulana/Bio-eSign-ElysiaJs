@@ -2,7 +2,7 @@ import { Elysia, t } from "elysia";
 import { prisma } from "../../lib/prisma";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
 
-export const userRoutes = new Elysia({ prefix: "/users" })
+export const userRoutes = new Elysia({ prefix: "/users", tags: ["Users"] })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
   .get("/", async () => {
@@ -47,7 +47,7 @@ export const userRoutes = new Elysia({ prefix: "/users" })
         passwordHash,
         email: body.email,
         role: body.role,
-        isActive: body.isActive ?? true,
+        isActive: body.is_active ?? true,
       },
       select: {
         id: true,
@@ -73,7 +73,7 @@ export const userRoutes = new Elysia({ prefix: "/users" })
           t.Literal("STUDENT"),
         ])
       ),
-      isActive: t.Optional(t.Boolean()),
+      is_active: t.Optional(t.Boolean()),
     }),
   })
   .put("/:id", async ({ params, body, set }) => {
@@ -86,7 +86,7 @@ export const userRoutes = new Elysia({ prefix: "/users" })
     if (body.username !== undefined) data.username = body.username;
     if (body.email !== undefined) data.email = body.email;
     if (body.role !== undefined) data.role = body.role;
-    if (body.isActive !== undefined) data.isActive = body.isActive;
+    if (body.is_active !== undefined) data.isActive = body.is_active;
     if (body.password !== undefined) {
       data.passwordHash = await Bun.password.hash(body.password);
     }
@@ -117,7 +117,7 @@ export const userRoutes = new Elysia({ prefix: "/users" })
           t.Literal("STUDENT"),
         ])
       ),
-      isActive: t.Optional(t.Boolean()),
+      is_active: t.Optional(t.Boolean()),
     }),
   })
   .delete("/:id", async ({ params, set }) => {

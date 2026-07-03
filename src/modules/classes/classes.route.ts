@@ -4,41 +4,51 @@ import {
   createAttendanceClass,
   deleteAttendanceClass,
   getAttendanceClass,
-  listAttendanceClasses,
+  listAttendanceClassesFiltered,
   syncAttendanceClassToDevice,
   updateAttendanceClass,
+  validateClassListFilter,
 } from "./classes.service";
 
 function mapAttendanceClassBody(body: {
   code?: string;
   name?: string;
-  departmentCode?: string | null;
   department_code?: string | null;
-  deviceCode?: string | null;
   device_code?: string | null;
 }) {
   return {
     ...(body.code !== undefined ? { code: body.code } : {}),
     ...(body.name !== undefined ? { name: body.name } : {}),
-    ...(body.departmentCode !== undefined || body.department_code !== undefined
+    ...(body.department_code !== undefined
       ? {
-          departmentCode:
-            body.departmentCode ??
-            body.department_code ??
-            null,
+          departmentCode: body.department_code ?? null,
         }
       : {}),
-    ...(body.deviceCode !== undefined || body.device_code !== undefined
-      ? { deviceCode: body.deviceCode ?? body.device_code ?? null }
+    ...(body.device_code !== undefined
+      ? { deviceCode: body.device_code ?? null }
       : {}),
   };
 }
 
-export const classRoutes = new Elysia({ prefix: "/classes" })
+export const classRoutes = new Elysia({ prefix: "/classes", tags: ["Classes"] })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
-  .get("/", async () => {
-    return await listAttendanceClasses();
+  .get("/", async ({ query, set }) => {
+    const departmentCode = query.department_code;
+    const facultyCode = query.faculty_code;
+    const validation = await validateClassListFilter({ departmentCode, facultyCode });
+
+    if (!validation.ok) {
+      set.status = validation.status;
+      return { error: validation.error };
+    }
+
+    return await listAttendanceClassesFiltered({ departmentCode, facultyCode });
+  }, {
+    query: t.Object({
+      department_code: t.Optional(t.String()),
+      faculty_code: t.Optional(t.String()),
+    }),
   })
   .post("/", async ({ body, set }) => {
     const result = await createAttendanceClass(mapAttendanceClassBody(body) as {
@@ -57,9 +67,7 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
     body: t.Object({
       code: t.String(),
       name: t.String(),
-      departmentCode: t.Optional(t.Union([t.String(), t.Null()])),
       department_code: t.Optional(t.Union([t.String(), t.Null()])),
-      deviceCode: t.Optional(t.Union([t.String(), t.Null()])),
       device_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
@@ -88,9 +96,7 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
     body: t.Object({
       code: t.Optional(t.String()),
       name: t.Optional(t.String()),
-      departmentCode: t.Optional(t.Union([t.String(), t.Null()])),
       department_code: t.Optional(t.Union([t.String(), t.Null()])),
-      deviceCode: t.Optional(t.Union([t.String(), t.Null()])),
       device_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
@@ -107,8 +113,8 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
     params: t.Object({ code: t.String() }),
   })
   .post("/:code/device-synchronizations", async ({ params, body, set }) => {
-    const result = await syncAttendanceClassToDevice(params.code, body.deviceCode ?? body.device_code, {
-      chunkSize: body.chunkSize,
+    const result = await syncAttendanceClassToDevice(params.code, body.device_code, {
+      chunkSize: body.chunk_size,
     });
 
     if (!result.ok) {
@@ -121,8 +127,7 @@ export const classRoutes = new Elysia({ prefix: "/classes" })
   }, {
     params: t.Object({ code: t.String() }),
     body: t.Object({
-      deviceCode: t.Optional(t.String()),
       device_code: t.Optional(t.String()),
-      chunkSize: t.Optional(t.Number({ minimum: 64 })),
+      chunk_size: t.Optional(t.Number({ minimum: 64 })),
     }),
   });

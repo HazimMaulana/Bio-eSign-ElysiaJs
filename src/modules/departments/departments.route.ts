@@ -5,17 +5,13 @@ import { jwtPlugin, authGuard } from "../../middleware/auth";
 function mapDepartmentBody(body: {
   code?: string;
   name?: string;
-  facultyCode?: string | null;
   faculty_code?: string | null;
 }) {
-  const facultyCode = body.facultyCode ?? body.faculty_code;
-
   return {
     ...(body.code !== undefined ? { code: body.code } : {}),
     ...(body.name !== undefined ? { name: body.name } : {}),
-    ...(body.facultyCode !== undefined ||
-    body.faculty_code !== undefined
-      ? { facultyId: facultyCode ?? null }
+    ...(body.faculty_code !== undefined
+      ? { facultyId: body.faculty_code ?? null }
       : {}),
   };
 }
@@ -37,7 +33,6 @@ async function resolveFacultyIdentity(identifier: string) {
 async function buildDepartmentData(body: {
   code?: string;
   name?: string;
-  facultyCode?: string | null;
   faculty_code?: string | null;
 }) {
   const data = mapDepartmentBody(body);
@@ -59,7 +54,7 @@ async function buildDepartmentData(body: {
   return { ok: true as const, data };
 }
 
-export const departmentRoutes = new Elysia({ prefix: "/departments" })
+export const departmentRoutes = new Elysia({ prefix: "/departments", tags: ["Departments"] })
   .use(jwtPlugin)
   .onBeforeHandle(authGuard)
   .get("/", async () => {
@@ -111,7 +106,6 @@ export const departmentRoutes = new Elysia({ prefix: "/departments" })
     body: t.Object({
       code: t.String(),
       name: t.String(),
-      facultyCode: t.Optional(t.Union([t.String(), t.Null()])),
       faculty_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })
@@ -138,7 +132,6 @@ export const departmentRoutes = new Elysia({ prefix: "/departments" })
     body: t.Object({
       code: t.Optional(t.String()),
       name: t.Optional(t.String()),
-      facultyCode: t.Optional(t.Union([t.String(), t.Null()])),
       faculty_code: t.Optional(t.Union([t.String(), t.Null()])),
     }),
   })

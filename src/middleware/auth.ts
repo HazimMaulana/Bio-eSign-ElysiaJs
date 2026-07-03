@@ -8,13 +8,32 @@ export const jwtPlugin = new Elysia({ name: "jwt-plugin" }).use(
   })
 );
 
+function getCookieValue(cookieHeader: string | undefined, name: string) {
+  if (!cookieHeader) return null;
+
+  const cookies = cookieHeader.split(";");
+  for (const cookie of cookies) {
+    const [rawKey, ...rawValue] = cookie.trim().split("=");
+    if (rawKey !== name) continue;
+
+    const value = rawValue.join("=");
+    return value ? decodeURIComponent(value) : null;
+  }
+
+  return null;
+}
+
 export const authGuard = async ({ jwt, set, headers }: { jwt: any; set: any; headers: Record<string, string | undefined> }) => {
   const auth = headers.authorization;
-  if (!auth || !auth.startsWith("Bearer ")) {
+  const bearerToken = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : null;
+  const cookieToken = getCookieValue(headers.cookie, "auth_token");
+  const token = bearerToken || cookieToken;
+
+  if (!token) {
     set.status = 401;
     return "Unauthorized";
   }
-  const token = auth.split(" ")[1];
+
   const profile = await jwt.verify(token);
   if (!profile) {
     set.status = 401;
