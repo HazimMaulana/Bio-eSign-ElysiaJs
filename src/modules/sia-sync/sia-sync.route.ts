@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { prisma } from "../../lib/prisma";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
+import { pushAttendanceRecordToSia } from "./sia-attendance-push.service";
 import { syncSiaSchedules } from "./sia-sync.service";
 
 export const siaSyncRoutes = new Elysia({ prefix: "/sia", tags: ["SIA Sync"] })
@@ -32,5 +33,26 @@ export const siaSyncRoutes = new Elysia({ prefix: "/sia", tags: ["SIA Sync"] })
     })),
     detail: {
       summary: "Trigger manual sync jadwal dari SIA ke tabel clone",
+    },
+  })
+  .post("/attendance-records/:id/push", async ({ params, set }) => {
+    const result = await pushAttendanceRecordToSia(params.id);
+
+    if (!result.ok) {
+      set.status = result.httpStatus ?? 502;
+      return result;
+    }
+
+    if (result.skipped) {
+      set.status = 202;
+    }
+
+    return result;
+  }, {
+    params: t.Object({
+      id: t.String(),
+    }),
+    detail: {
+      summary: "Test push satu attendance record ke API SIA",
     },
   });

@@ -1,6 +1,7 @@
 import mqtt, { type IPublishPacket, type MqttClient } from "mqtt";
 import { prisma } from "./prisma";
 import { redis } from "./redis";
+import { pushAttendanceRecordToSia } from "../modules/sia-sync/sia-attendance-push.service";
 
 // MQTT topic definitions
 // {prefix}/{deviceId}/attendance -> ESP32 reports check-in/check-out
@@ -150,6 +151,33 @@ function summarizePingPayload(payload: PingPayload) {
     firmware_version: payload.firmware_version ?? null,
     uptime_seconds: payload.uptime_seconds ?? null,
   };
+}
+
+function pushAttendanceRecordToSiaInBackground(attendanceRecordId: string) {
+  void pushAttendanceRecordToSia(attendanceRecordId)
+    .then((result) => {
+      if (result.skipped) return;
+
+      if (!result.ok) {
+        console.warn("[SIA] Attendance push failed:", {
+          attendance_record_id: attendanceRecordId,
+          http_status: result.httpStatus ?? null,
+          error: result.error,
+        });
+        return;
+      }
+
+      console.log("[SIA] Attendance pushed:", {
+        attendance_record_id: attendanceRecordId,
+        http_status: result.httpStatus,
+      });
+    })
+    .catch((error) => {
+      console.warn("[SIA] Attendance push crashed:", {
+        attendance_record_id: attendanceRecordId,
+        error: error instanceof Error ? error.message : error,
+      });
+    });
 }
 
 function resolveTopicRoute(topic: string): TopicRoute | null {
@@ -448,7 +476,7 @@ async function handleAttendance(payload: AttendancePayload) {
   }
 
   try {
-    await prisma.attendanceRecord.create({
+    const attendanceRecord = await prisma.attendanceRecord.create({
       data: {
         attendanceSessionId: activeSession.id,
         studentId: fingerprint.studentId,
@@ -459,6 +487,7 @@ async function handleAttendance(payload: AttendancePayload) {
         rawPayload: payload as object,
       },
     });
+    pushAttendanceRecordToSiaInBackground(attendanceRecord.id);
   } catch (error) {
     if ((error as { code?: string }).code === "P2002") {
       await publishAttendanceAck("duplicate", "already_attended", fingerprint.studentId);
