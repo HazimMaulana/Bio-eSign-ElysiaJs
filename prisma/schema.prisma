@@ -110,6 +110,7 @@ model Student {
   attendances       AttendanceEvent[]
   attendanceRecords AttendanceRecord[]
   enrollments       CourseEnrollment[]
+  siaClassMembers   SiaClassStudent[]
   createdAt         DateTime             @default(now()) @map("created_at")
   updatedAt         DateTime             @updatedAt @map("updated_at")
 
@@ -376,6 +377,39 @@ model SiaScheduleClone {
   @@index([courseId])
   @@index([lecturerId])
   @@map("sia_schedule_clones")
+}
+
+// Roster of a legacy SIA "kelas" (per id_kelas, scoped to one day of week) —
+// captured so the same student is not re-linked to the same class twice.
+model SiaClassStudent {
+  id            String   @id @default(uuid())
+  siaClassId    Int      @map("sia_class_id") // id_kelas from SIA
+  kodeMk        String   @map("kode_mk")
+  namaMk        String   @map("nama_mk")
+  namaKelas     String?  @map("nama_kelas")
+  hariKuliah    String   @map("hari_kuliah")
+  tahunAkademik Int      @map("tahun_akademik")
+  studentId     String   @map("student_id")
+  student       Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([siaClassId, studentId])
+  @@index([studentId])
+  @@index([hariKuliah])
+  @@map("sia_class_students")
+}
+
+// Full mahasiswa directory harvested from SIA (across all kelas/hari seen so far).
+// Independent of `Student` (the in-system registered/biometric entity) — this is
+// the raw pool used to look someone up before they are registered.
+model SiaStudentMaster {
+  id        String   @id @default(uuid())
+  nim       String   @unique
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("sia_students_master")
 }
 
 model SecurityAuditLog {

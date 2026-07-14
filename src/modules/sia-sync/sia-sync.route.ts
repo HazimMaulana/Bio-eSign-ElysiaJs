@@ -3,6 +3,7 @@ import { prisma } from "../../lib/prisma";
 import { jwtPlugin, authGuard } from "../../middleware/auth";
 import { pushAttendanceRecordToSia } from "./sia-attendance-push.service";
 import { syncSiaSchedules } from "./sia-sync.service";
+import { runScheduledMqttTemplateSync } from "./sia-mqtt-template.scheduler";
 
 export const siaSyncRoutes = new Elysia({ prefix: "/sia", tags: ["SIA Sync"] })
   .use(jwtPlugin)
@@ -33,6 +34,13 @@ export const siaSyncRoutes = new Elysia({ prefix: "/sia", tags: ["SIA Sync"] })
     })),
     detail: {
       summary: "Trigger manual sync jadwal dari SIA ke tabel clone",
+    },
+  })
+  .post("/mqtt-template-sync", async () => {
+    return await runScheduledMqttTemplateSync();
+  }, {
+    detail: {
+      summary: "Trigger pengiriman roster dan template MQTT untuk jadwal SIA aktif",
     },
   })
   .post("/attendance-records/:id/push", async ({ params, set }) => {
